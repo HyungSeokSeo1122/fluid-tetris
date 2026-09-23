@@ -47,18 +47,18 @@ On a phone, the board also takes gestures: tap to rotate clockwise, swipe sidewa
 - Same-color bodies that were separate flash brighter when they touch. That starts or extends a merge chain.
 - A row clears only when all 10 cells are full and the **same color**. Mixed rows never clear. The row flashes, splashes, then disappears. Liquid above settles through the gap.
 - The game ends when locked fluid occupies the spawn zone, or the next piece cannot spawn.
-- After enough cleared rows the run enters mid game: faster fall, thinner liquid, and two extra colors.
+- Cleared rows advance the run through stage 1, stage 2, and stage 3. Each stage speeds the fall, thins the liquid, and can add a color.
 
 ### Scoring
 
 - Soft drop: 1 point per row. Hard drop: 2 points per row traveled before the drip.
 - Merge: `mergeBonus × chain` (chain starts at 1 on the first contact).
-- Line clear base is `[0, 100, 300, 600, 1000]` for 0–4 rows. Clearing **2 or more rows at once** multiplies that base by the row count. A chain of 2 or more multiplies again by `1 + chainStep × (chain - 1)`.
+- Line clear base is `[0, 100, 300, 600, 1000]` for 0–4 rows. Clearing several rows at once multiplies that base: **2 rows ×1.5**, **3 rows ×2.5**, **4 rows ×4**. The first same-color contact starts a chain at ×1. Each later merge adds `chainStep` (0.25), so chain 2 is ×1.25, chain 3 is ×1.50, and so on.
 - The chain resets after `chainWindow` seconds without another merge.
 
 ### Balance
 
-Edit `src/config.ts`. The four designer knobs are the early-game values:
+Edit `src/config.ts`. The four designer knobs are stage 1, and they stay in sync with the first entry of `stages`:
 
 | Knob | Effect |
 | --- | --- |
@@ -67,9 +67,15 @@ Edit `src/config.ts`. The four designer knobs are the early-game values:
 | `colorPoolSize` | How many entries from the front of `colors` can spawn |
 | `colors` | Palette. Shipped order is cyan, magenta, amber, lime, violet |
 
-`midGame` replaces fall speed, viscosity, and pool size after `midGame.afterLines` cleared rows. Early defaults are a pool of 3 (cyan, magenta, amber) and high viscosity. Mid defaults add lime and violet and lower the viscosity.
+`stages` is the level table the run actually reads. A stage turns on once cleared rows reach its `afterLines`.
 
-Ooze interval is `max(0.05, viscosity × tuning.oozeViscosityScale)` seconds per one-cell drip. Seep interval is `tuning.seepBase + viscosity × tuning.seepViscosityScale`.
+| Stage | afterLines | colorPoolSize | viscosity | fallSpeed | Colors |
+| --- | --- | --- | --- | --- | --- |
+| stage1 | 0 | 3 | 0.85 | 0.6 | Cyan, magenta, amber |
+| stage2 | 4 | 4 | 0.6 | 0.9 | Adds lime |
+| stage3 | 8 | 5 | 0.4 | 1.2 | Adds violet |
+
+Ooze interval is `max(0.05, viscosity × tuning.oozeViscosityScale)` seconds per one-cell drip. Seep interval is `tuning.seepBase + viscosity × tuning.seepViscosityScale`. With the shipped scales, stage 1 drips about every 0.72s and stage 3 about every 0.34s.
 
 ## 한국어
 
@@ -114,18 +120,18 @@ npm run preview # 빌드 결과 미리보기
 - 서로 떨어져 있던 같은 색이 닿으면 밝게 반짝이며 병합 체인이 시작되거나 이어집니다.
 - 줄은 10칸이 **모두 같은 색**으로 채워졌을 때만 지워집니다. 색이 섞이면 지워지지 않습니다. 줄이 잠깐 반짝이고 튀긴 뒤 사라지며, 위의 액체는 빈 공간으로 가라앉습니다.
 - 고정된 액체가 소환 구역에 닿거나, 다음 조각이 나올 자리가 없으면 게임 오버입니다.
-- 지운 줄이 기준을 넘으면 중반이 됩니다. 낙하가 빨라지고, 액체가 묽어지며, 색이 두 개 더 나옵니다.
+- 지운 줄이 쌓이면 스테이지 1, 2, 3으로 넘어갑니다. 스테이지가 오를수록 낙하가 빨라지고, 액체가 묽어지며, 색이 하나씩 늘어납니다.
 
 ### 점수
 
 - 소프트 드롭은 내려간 줄당 1점, 하드 드롭은 낙하한 줄당 2점입니다 (착지 후 스며드는 칸은 제외).
 - 병합은 `mergeBonus × chain` 입니다. 첫 접촉의 체인은 1입니다.
-- 줄 삭제 기본점은 0–4줄에 대해 `[0, 100, 300, 600, 1000]` 입니다. **한 번에 2줄 이상** 지우면 기본점에 줄 수를 곱합니다. 체인이 2 이상이면 `1 + chainStep × (chain - 1)` 을 한 번 더 곱합니다.
+- 줄 삭제 기본점은 0–4줄에 대해 `[0, 100, 300, 600, 1000]` 입니다. 한 번에 여러 줄을 지우면 기본점에 배수를 곱합니다. **2줄 ×1.5**, **3줄 ×2.5**, **4줄 ×4**. 같은 색이 처음 닿으면 체인이 ×1로 시작합니다. 그 다음 병합마다 `chainStep`(0.25)이 더해져, 체인 2는 ×1.25, 체인 3은 ×1.50입니다.
 - 병합 없이 `chainWindow` 초가 지나면 체인이 끊깁니다.
 
 ### 밸런스 조절
 
-`src/config.ts` 를 수정합니다. 아래 네 값이 초반 난이도입니다.
+`src/config.ts` 를 수정합니다. 위쪽 네 값은 스테이지 1이고, `stages` 의 첫 항목과 같게 유지합니다.
 
 | 값 | 효과 |
 | --- | --- |
@@ -134,6 +140,12 @@ npm run preview # 빌드 결과 미리보기
 | `colorPoolSize` | `colors` 앞에서부터 몇 색을 소환에 쓸지 |
 | `colors` | 팔레트. 기본 순서는 시안, 마젠타, 앰버, 라임, 바이올렛 |
 
-`midGame` 은 `midGame.afterLines` 줄을 지운 뒤 낙하 속도, 점도, 색 풀을 바꿉니다. 초반 기본값은 색 3개(시안, 마젠타, 앰버)와 높은 점도입니다. 중반은 라임과 바이올렛이 추가되고 점도가 낮아집니다.
+실제로 판이 읽는 난이도는 `stages` 배열입니다. 지운 줄 수가 그 스테이지의 `afterLines` 에 닿으면 바뀝니다.
 
-조작 중 한 칸 흘러내리는 간격은 `max(0.05, viscosity × tuning.oozeViscosityScale)` 초입니다. 고정 후 옆 흐름 간격은 `tuning.seepBase + viscosity × tuning.seepViscosityScale` 초입니다.
+| 스테이지 | afterLines | colorPoolSize | viscosity | fallSpeed | 색 |
+| --- | --- | --- | --- | --- | --- |
+| stage1 | 0 | 3 | 0.85 | 0.6 | 시안, 마젠타, 앰버 |
+| stage2 | 4 | 4 | 0.6 | 0.9 | 라임 추가 |
+| stage3 | 8 | 5 | 0.4 | 1.2 | 바이올렛 추가 |
+
+조작 중 한 칸 흘러내리는 간격은 `max(0.05, viscosity × tuning.oozeViscosityScale)` 초입니다. 고정 후 옆 흐름 간격은 `tuning.seepBase + viscosity × tuning.seepViscosityScale` 초입니다. 기본 스케일에서 스테이지 1은 약 0.72초마다, 스테이지 3은 약 0.34초마다 한 칸씩 흘러내립니다.

@@ -1,4 +1,4 @@
-import { config, liveBalance, type GameMode } from '../config';
+import { config, liveBalance, stageForLines, type StageId } from '../config';
 import { clearRows, findFullRows, gravity, seep, type SimResult } from '../fluid/sim';
 import { COLS, ROWS, VISIBLE_TOP, createGrid, inBounds, occupiesSpawn, type Cell } from '../fluid/grid';
 import { type Frame } from './input';
@@ -14,7 +14,7 @@ import {
   tryShift,
   type Active,
 } from './piece';
-import { lineScore, mergePoints } from './scoring';
+import { lineScore, mergePoints, rowClearMultiplier } from './scoring';
 import { shuffleBag, type PieceType } from './tetrominoes';
 
 const NEIGHBORS = [
@@ -64,7 +64,7 @@ export type GameEvent =
   | { type: 'hard' }
   | { type: 'merge'; score: number; chain: number }
   | { type: 'clear'; rows: number; score: number }
-  | { type: 'phase'; mode: GameMode }
+  | { type: 'phase'; mode: StageId }
   | { type: 'gameover' };
 
 export type GameState = {
@@ -77,7 +77,7 @@ export type GameState = {
   lines: number;
   chain: number;
   chainLeft: number;
-  mode: GameMode;
+  mode: StageId;
   status: Status;
   fallAcc: number;
   oozeAcc: number;
@@ -116,18 +116,18 @@ function raiseBest(state: GameState): void {
 
 export function createGame(best = 0): GameState {
   const bag: PieceType[] = [];
-  const early = liveBalance('early');
+  const opening = liveBalance('stage1');
   return {
     grid: createGrid(),
-    active: createActive(pullType(bag), pullColor(early.colorPoolSize)),
-    next: { type: pullType(bag), color: pullColor(early.colorPoolSize) },
+    active: createActive(pullType(bag), pullColor(opening.colorPoolSize)),
+    next: { type: pullType(bag), color: pullColor(opening.colorPoolSize) },
     bag,
     score: 0,
     best,
     lines: 0,
     chain: 0,
     chainLeft: 0,
-    mode: 'early',
+    mode: 'stage1',
     status: 'playing',
     fallAcc: 0,
     oozeAcc: 0,
@@ -185,11 +185,26 @@ function addChain(state: GameState, events: GameEvent[]): void {
   events.push({ type: 'merge', score: bonus, chain: state.chain });
 }
 
+function stageBanner(id: StageId): string {
+  switch (id) {
+    case 'stage1':
+      return 'Stage 1';
+    case 'stage2':
+      return 'Stage 2 — quicker fall';
+    case 'stage3':
+      return 'Stage 3 — thin liquid';
+    default: {
+      const neverId: never = id;
+      return neverId;
+    }
+  }
+}
+
 function refreshMode(state: GameState): GameEvent | null {
-  const next: GameMode = state.lines >= config.midGame.afterLines ? 'mid' : 'early';
+  const next = stageForLines(state.lines).id;
   if (next === state.mode) return null;
   state.mode = next;
-  state.banner = next === 'mid' ? 'Mid game — thinner liquid' : 'Early flow';
+  state.banner = stageBanner(next);
   state.bannerLeft = 2.6;
   return { type: 'phase', mode: next };
 }
@@ -208,7 +223,7 @@ function beginClear(state: GameState, rows: number[], events: GameEvent[]): void
   state.popups.push({
     x: COLS / 2,
     y: mid,
-    text: rows.length >= 2 ? `+${gained}  ×${rows.length}` : `+${gained}`,
+    text: rows.length >= 2 ? `+${gained}  ×${rowClearMultiplier(rows.length)}` : `+${gained}`,
     age: 0,
     life: 0.95,
     color: popupColor,

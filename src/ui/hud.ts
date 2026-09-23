@@ -1,5 +1,6 @@
-import { COLOR_NAMES, config, liveBalance } from '../config';
+import { COLOR_NAMES, config, liveBalance, stageTitle } from '../config';
 import type { GameState } from '../game/engine';
+import { chainMultiplier } from '../game/scoring';
 
 export type HudNodes = {
   score: HTMLElement;
@@ -44,11 +45,8 @@ export function syncHud(nodes: HudNodes, state: GameState, muted: boolean): void
   nodes.score.textContent = state.score.toLocaleString();
   nodes.best.textContent = state.best.toLocaleString();
   nodes.lines.textContent = `Rows cleared ${state.lines}`;
-  nodes.phase.textContent =
-    state.mode === 'early'
-      ? `Early · viscosity ${balance.viscosity.toFixed(1)} · fall ${balance.fallSpeed.toFixed(2)}`
-      : `Mid · viscosity ${balance.viscosity.toFixed(1)} · fall ${balance.fallSpeed.toFixed(2)}`;
-  if (state.chain >= 2) nodes.chain.textContent = `Chain ×${state.chain}`;
+  nodes.phase.textContent = `${stageTitle(state.mode)} · viscosity ${balance.viscosity.toFixed(2)} · fall ${balance.fallSpeed.toFixed(1)}`;
+  if (state.chain >= 2) nodes.chain.textContent = `Chain ${state.chain} · ×${chainMultiplier(state.chain).toFixed(2)}`;
   else if (state.chain === 1) nodes.chain.textContent = 'Chain started';
   else nodes.chain.textContent = 'No chain';
   nodes.nextLabel.textContent = COLOR_NAMES[state.next.color] ?? 'Next';

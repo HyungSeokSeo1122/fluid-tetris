@@ -1,4 +1,4 @@
-import { config, liveBalance } from './config';
+import { config, liveBalance, stageForLines } from './config';
 import { createGrid } from './fluid/grid';
 import { findFullRows, clearRows, gravity, seep } from './fluid/sim';
 import { createGame, updateGame, type GameState } from './game/engine';
@@ -42,29 +42,40 @@ function advance(game: GameState, frame: Frame, seconds: number): void {
 }
 
 function checkPalette(): void {
-  assert(config.fallSpeed > 0, 'fallSpeed');
-  assert(config.viscosity > config.midGame.viscosity, 'early liquid is thicker');
-  assert(config.colorPoolSize === 3, 'early pool');
-  assert(config.midGame.colorPoolSize === 5, 'mid pool');
+  const [stage1, stage2, stage3] = config.stages;
+  assert(stage1.id === 'stage1' && stage2.id === 'stage2' && stage3.id === 'stage3', 'stage ids');
+  assert(stage1.colorPoolSize === 3 && stage1.viscosity === 0.85 && stage1.fallSpeed === 0.6, 'stage 1');
+  assert(stage2.colorPoolSize === 4 && stage2.viscosity === 0.6 && stage2.fallSpeed === 0.9, 'stage 2');
+  assert(stage3.colorPoolSize === 5 && stage3.viscosity === 0.4 && stage3.fallSpeed === 1.2, 'stage 3');
+  assert(config.fallSpeed === stage1.fallSpeed, 'fallSpeed knob matches stage 1');
+  assert(config.viscosity === stage1.viscosity, 'viscosity knob matches stage 1');
+  assert(config.colorPoolSize === stage1.colorPoolSize, 'colorPoolSize knob matches stage 1');
   assert(config.colors.length >= 5, 'palette size');
   assert(config.colors[0] === '#00E5FF', 'cyan');
   assert(config.colors[1] === '#FF2D95', 'magenta');
   assert(config.colors[2] === '#FFB020', 'amber');
   assert(config.colors[3] === '#7CFF3A', 'lime');
   assert(config.colors[4] === '#A78BFA', 'violet');
-  const early = liveBalance('early');
-  const mid = liveBalance('mid');
-  assert(early.colorPoolSize === 3 && early.mode === 'early', 'early balance');
-  assert(mid.colorPoolSize === 5 && mid.mode === 'mid', 'mid balance');
-  assert(mid.fallSpeed > early.fallSpeed, 'mid falls faster');
-  assert(mid.viscosity < early.viscosity, 'mid seeps faster');
+  assert(config.scoring.rowMultiplier[2] === 1.5, 'double multiplier');
+  assert(config.scoring.rowMultiplier[3] === 2.5, 'triple multiplier');
+  assert(config.scoring.chainStep === 0.25, 'chain step');
+  const first = liveBalance('stage1');
+  const second = liveBalance('stage2');
+  const third = liveBalance('stage3');
+  assert(first.mode === 'stage1' && first.colorPoolSize === 3, 'stage 1 live');
+  assert(second.colorPoolSize === 4 && second.fallSpeed === 0.9 && second.viscosity === 0.6, 'stage 2 live');
+  assert(third.colorPoolSize === 5 && third.fallSpeed === 1.2 && third.viscosity === 0.4, 'stage 3 live');
+  assert(stageForLines(0).id === 'stage1', 'opening stage');
+  assert(stageForLines(stage2.afterLines).id === 'stage2', 'stage 2 gate');
+  assert(stageForLines(stage3.afterLines).id === 'stage3', 'stage 3 gate');
 }
 
 function checkScores(): void {
   assert(lineScore(1, 1) === 100, `single ${lineScore(1, 1)}`);
-  assert(lineScore(2, 1) === 600, `double ${lineScore(2, 1)}`);
-  assert(lineScore(2, 2) === 900, `double chain ${lineScore(2, 2)}`);
-  assert(lineScore(4, 3) === 8000, `quad chain ${lineScore(4, 3)}`);
+  assert(lineScore(2, 0) === 450, `double ${lineScore(2, 0)}`);
+  assert(lineScore(2, 2) === 563, `double chain ${lineScore(2, 2)}`);
+  assert(lineScore(3, 1) === 1500, `triple ${lineScore(3, 1)}`);
+  assert(lineScore(3, 3) === 2250, `triple chain ${lineScore(3, 3)}`);
   assert(lineScore(0, 4) === 0, 'zero rows');
 }
 
@@ -163,13 +174,23 @@ function checkClearAndPhase(): void {
   assert(multi.lines === 2, `multi lines ${multi.lines}`);
   assert(multi.score === lineScore(2, 0), `multi score ${multi.score}`);
 
+  const stage2 = config.stages[1];
   const phase = createGame(0);
   wipe(phase);
-  phase.lines = config.midGame.afterLines - 1;
-  for (let x = 0; x < 10; x += 1) phase.grid[21][x] = { color: 4, glow: 0 };
+  phase.lines = stage2.afterLines - 1;
+  for (let x = 0; x < 10; x += 1) phase.grid[21][x] = { color: 3, glow: 0 };
   updateGame(phase, idle(), 0.016);
-  assert(phase.mode === 'mid', 'mid game unlocks on the line threshold');
-  assert(phase.lines === config.midGame.afterLines, 'line count');
+  assert(phase.mode === 'stage2', 'stage 2 unlocks on its line gate');
+  assert(phase.lines === stage2.afterLines, 'line count');
+
+  const stage3 = config.stages[2];
+  const late = createGame(0);
+  wipe(late);
+  late.lines = stage3.afterLines - 1;
+  for (let x = 0; x < 10; x += 1) late.grid[21][x] = { color: 4, glow: 0 };
+  updateGame(late, idle(), 0.016);
+  assert(late.mode === 'stage3', 'stage 3 unlocks on its line gate');
+  assert(late.lines === stage3.afterLines, 'stage 3 line count');
 }
 
 function checkGameOver(): void {
@@ -191,7 +212,7 @@ function checkOoze(): void {
   assert(game.active !== null, 'piece');
   assert(!canGroupFall(game.grid, game.active), 'group is supported');
   assert(canDroop(game.grid, game.active), 'a mino can drip');
-  const oozeEvery = Math.max(0.05, liveBalance('early').viscosity * config.tuning.oozeViscosityScale);
+  const oozeEvery = Math.max(0.05, liveBalance('stage1').viscosity * config.tuning.oozeViscosityScale);
   advance(game, idle(), oozeEvery * 0.65);
   assert(game.active !== null && game.active.droop.every((value) => value === 0), 'high viscosity delays the drip');
   advance(game, idle(), oozeEvery * 0.5);
