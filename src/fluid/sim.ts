@@ -138,16 +138,16 @@ export function gravity(
 }
 
 /**
- * Viscous slump. A supported cell may drip diagonally into a shorter column,
- * or roll sideways onto a supported step, but only when the neighbor column
- * is shorter by at least two units. Equal piles and a single floor layer stay
- * put, so a finished row is not smeared before it can clear.
+ * Viscous slump. A supported cell may drip diagonally into a supported hole,
+ * or roll sideways onto a step when that column is shorter by at least two.
+ * A one-cell floor layer does not smear, so a finished row stays intact.
  */
 export function seep(
   grid: Cell[][],
   blocked: ReadonlySet<string>,
   frozenRows: ReadonlySet<number>,
   biasRight: boolean,
+  holeDrop = 1,
 ): SimResult {
   const heights = Array.from({ length: COLS }, (_, x) => columnHeight(grid, x));
   const prefer = biasRight ? 1 : -1;
@@ -173,7 +173,11 @@ export function seep(
           if (grid[option.ty][option.tx].color >= 0) continue;
           if (blocked.has(cellKey(option.tx, option.ty))) continue;
           if (option.ty === y && !supported(grid, blocked, frozenRows, option.tx, option.ty)) continue;
-          if (heights[option.tx] + 1 >= heights[x]) continue;
+          const columnDrop = heights[x] - heights[option.tx];
+          const intoHole =
+            option.downward >= 2 && supported(grid, blocked, frozenRows, option.tx, option.ty);
+          const minDrop = intoHole ? Math.max(1, holeDrop) : 2;
+          if (columnDrop < minDrop) continue;
           const score =
             (heights[x] - heights[option.tx]) * 10 +
             option.downward * 3 +
@@ -230,6 +234,93 @@ export function findFullRows(grid: Cell[][]): number[] {
     if (same) rows.push(y);
   }
   return rows;
+}
+
+export function hasFloating(
+  grid: Cell[][],
+  blocked: ReadonlySet<string>,
+  frozenRows: ReadonlySet<number>,
+): boolean {
+  for (let y = 0; y < ROWS; y += 1) {
+    if (frozenRows.has(y)) continue;
+    for (let x = 0; x < COLS; x += 1) {
+      if (grid[y][x].color < 0) continue;
+      if (!supported(grid, blocked, frozenRows, x, y)) return true;
+    }
+  }
+  return false;
+}
+
+function gridSignature(grid: Cell[][]): string {
+  let signature = '';
+  for (let y = 0; y < ROWS; y += 1) {
+    for (let x = 0; x < COLS; x += 1) {
+      const color = grid[y][x].color;
+      signature += color < 0 ? '.' : String(color);
+    }
+  }
+  return signature;
+}
+
+/**
+ * After a clear, drop every floating cell to the floor and let tall columns
+ * slump into the gaps they opened. Stops before smearing a newly completed row.
+ */
+export function settleGrid(
+  grid: Cell[][],
+  blocked: ReadonlySet<string>,
+  frozenRows: ReadonlySet<number>,
+  maxPasses = 28,
+  holeDrop = 1,
+): SimResult {
+  const origin = new Map<string, { x: number; y: number; color: number }>();
+  for (let y = 0; y < ROWS; y += 1) {
+    for (let x = 0; x < COLS; x += 1) {
+      const color = grid[y][x].color;
+      if (color >= 0) origin.set(cellKey(x, y), { x, y, color });
+    }
+  }
+
+  const remap = (moves: readonly Move[]): void => {
+    const carried = new Map<string, { x: number; y: number; color: number }>();
+    for (const move of moves) {
+      const prev = origin.get(cellKey(move.x, move.y));
+      origin.delete(cellKey(move.x, move.y));
+      if (prev) carried.set(cellKey(move.nx, move.ny), prev);
+    }
+    for (const [key, prev] of carried) origin.set(key, prev);
+  };
+
+  const seen = new Set<string>();
+  let merged = false;
+  let passes = 0;
+  while (passes < maxPasses) {
+    passes += 1;
+    const signature = gridSignature(grid);
+    if (seen.has(signature)) break;
+    seen.add(signature);
+    if (findFullRows(grid).length > 0) break;
+    const fell = gravity(grid, blocked, frozenRows);
+    if (fell.moves.length > 0) {
+      merged = merged || fell.merged;
+      remap(fell.moves);
+      continue;
+    }
+    const slumped = seep(grid, blocked, frozenRows, passes % 2 === 0, holeDrop);
+    if (slumped.moves.length === 0) break;
+    merged = merged || slumped.merged;
+    remap(slumped.moves);
+  }
+
+  const moves: Move[] = [];
+  for (const [key, from] of origin) {
+    const [xs, ys] = key.split(',');
+    const x = Number(xs);
+    const y = Number(ys);
+    if (from.x === x && from.y === y) continue;
+    moves.push({ x: from.x, y: from.y, nx: x, ny: y, color: from.color });
+  }
+  return { moves, merged };
 }
 
 export function clearRows(grid: Cell[][], rows: readonly number[]): void {

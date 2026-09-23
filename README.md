@@ -32,11 +32,14 @@ There is no backend. The best score, mute choice, and stage gates are stored in 
 | Rotate counter-clockwise | `Z` | `↺` |
 | Soft drop | `↓` | Short swipe down, or hold `↓` |
 | Hard drop | `Space` | Long swipe down, or `Drop` |
+| Hold | `C` or `Shift` | — |
 | Pause | `P` or `Esc` | Pause button |
 | Mute | `M` | Sound button |
 | Restart | `R` | Restart |
 
 On a phone, the board also takes gestures: tap to rotate clockwise, swipe sideways to shift, short swipe down to nudge, long swipe down to hard-drop. The on-screen buttons stay fixed to the bottom edge so they remain reachable.
+
+Hold (`C` or `Shift`) stores the active piece, or swaps it with the piece already held. The swap is spent until that piece locks, matching classic hold. The held piece returns in its spawn shape, with its color kept.
 
 ### Sound
 
@@ -120,11 +123,14 @@ npm run preview # 빌드 결과 미리보기
 | 반시계 방향 회전 | `Z` | `↺` |
 | 소프트 드롭 | `↓` | 짧게 아래로 스와이프, 또는 `↓` 길게 누르기 |
 | 하드 드롭 | `Space` | 길게 아래로 스와이프, 또는 `Drop` |
+| 홀드 | `C` 또는 `Shift` | — |
 | 일시정지 | `P` 또는 `Esc` | Pause |
 | 음소거 | `M` | Sound |
 | 재시작 | `R` | Restart |
 
 휴대폰에서는 보드 제스처도 동작합니다. 탭하면 시계 방향 회전, 좌우 스와이프는 이동, 짧게 내리면 살짝 내리고, 길게 내리면 하드 드롭입니다. 화면 아래 버튼은 아래에 고정되어 스크롤해도 누를 수 있습니다.
+
+홀드(`C` 또는 `Shift`)는 조작 중인 조각을 보관하거나, 이미 보관 중인 조각과 바꿉니다. 그 조각이 고정되기 전에는 한 번만 쓸 수 있습니다. 다시 나올 때는 처음 소환 모양이고, 색은 그대로입니다.
 
 ### 소리
 

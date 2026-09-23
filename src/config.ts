@@ -75,6 +75,24 @@ export const config = {
      * Stage 1 drips about every 0.72s. Stage 3 about every 0.34s.
      */
     oozeViscosityScale: 0.85,
+    /**
+     * Follow-up drips into a deep gap wait this fraction of the normal ooze
+     * interval, so a pour reads as a cascade without melting the whole piece.
+     */
+    oozeGapFollow: 0.58,
+    /** Seconds the active drip eases from the previous cell into the gap. */
+    oozeBlend: 0.16,
+    /**
+     * Minimum column-height difference for a downward seep into a supported hole.
+     * Sideways slumps still need a difference of two, so a flat floor does not smear.
+     */
+    seepHoleDrop: 1,
+    /** Downward drips slide longer than a sideways shuffle so the gap reads. */
+    dripSlideScale: 1.65,
+    /** Safety cap for the post-clear collapse. The well is only 22 rows tall. */
+    settlePasses: 28,
+    /** One slide covers the whole post-clear fall, from the old cell to the floor. */
+    settleSlide: 0.34,
     clearFlash: 0.22,
     slideDuration: 0.12,
     dasDelay: 0.17,

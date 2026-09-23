@@ -1,5 +1,5 @@
 export type HoldName = 'left' | 'right' | 'soft';
-export type TapName = 'cw' | 'ccw' | 'hard' | 'pause' | 'restart';
+export type TapName = 'cw' | 'ccw' | 'hard' | 'pause' | 'restart' | 'hold';
 
 export type Frame = {
   dir: -1 | 0 | 1;
@@ -7,9 +7,14 @@ export type Frame = {
   rotate: -1 | 0 | 1;
   soft: boolean;
   hard: boolean;
+  hold: boolean;
   pausePressed: boolean;
   restart: boolean;
 };
+
+export function isHoldKey(code: string): boolean {
+  return code === 'KeyC' || code === 'ShiftLeft' || code === 'ShiftRight';
+}
 
 type QueuedShift = { dir: -1 | 1; count: number };
 
@@ -25,6 +30,9 @@ const GAME_CODES = new Set([
   'Escape',
   'KeyR',
   'KeyM',
+  'KeyC',
+  'ShiftLeft',
+  'ShiftRight',
 ]);
 
 function isTypingTarget(target: EventTarget | null): boolean {
@@ -174,6 +182,7 @@ export class InputController {
 
     let rotate: -1 | 0 | 1 = 0;
     let hard = false;
+    let hold = false;
     let pausePressed = false;
     let restart = false;
     for (const tap of this.pending) {
@@ -186,6 +195,9 @@ export class InputController {
           break;
         case 'hard':
           hard = true;
+          break;
+        case 'hold':
+          hold = true;
           break;
         case 'pause':
           pausePressed = true;
@@ -207,6 +219,7 @@ export class InputController {
       rotate,
       soft: this.held.has('soft') || this.clock < this.softUntil,
       hard,
+      hold,
       pausePressed,
       restart,
     };
@@ -222,6 +235,11 @@ export class InputController {
     if (isTypingTarget(event.target)) return;
     if (!GAME_CODES.has(event.code)) return;
     if (event.repeat) {
+      event.preventDefault();
+      return;
+    }
+    if (isHoldKey(event.code)) {
+      this.tap('hold');
       event.preventDefault();
       return;
     }
