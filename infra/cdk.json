@@ -1,0 +1,9 @@
+{
+  "app": "npx tsx --tsconfig tsconfig.json bin/app.ts",
+  "output": "cdk.out",
+  "context": {
+    "githubRepo": "HyungSeokSeo1122/fluid-tetris",
+    "region": "ap-northeast-2",
+    "@aws-cdk/core:defaultCrossStackReferences": "strong"
+  }
+}

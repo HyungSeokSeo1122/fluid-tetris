@@ -1,0 +1,140 @@
+name: Deploy site
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-site-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site-dist
+          path: dist
+          if-no-files-found: error
+          retention-days: 1
+
+  synth:
+    runs-on: ubuntu-latest
+    env:
+      CDK_DEFAULT_ACCOUNT: "000000000000"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+
+      - name: Check the CloudFormation templates
+        working-directory: infra
+        run: |
+          npm ci
+          npm run check
+
+  deploy-staging:
+    needs: [build, synth]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_STAGING_DEPLOY_ROLE_ARN }}
+      AWS_BUCKET_NAME: ${{ vars.AWS_STAGING_BUCKET_NAME }}
+      AWS_DISTRIBUTION_ID: ${{ vars.AWS_STAGING_DISTRIBUTION_ID }}
+      AWS_REGION: ${{ vars.AWS_STAGING_REGION }}
+    steps:
+      - name: Require staging GitHub variables
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in AWS_DEPLOY_ROLE_ARN AWS_BUCKET_NAME AWS_DISTRIBUTION_ID AWS_REGION; do
+            if [ -z "${!name}" ]; then
+              echo "Missing GitHub variable: AWS_STAGING_${name#AWS_}"
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            echo "Copy AWS_STAGING_* from the FluidTetrisStaging outputs. See DEPLOY.md."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: site-dist
+          path: dist
+
+      - uses: ./.github/actions/publish-site
+        with:
+          role-arn: ${{ vars.AWS_STAGING_DEPLOY_ROLE_ARN }}
+          bucket-name: ${{ vars.AWS_STAGING_BUCKET_NAME }}
+          distribution-id: ${{ vars.AWS_STAGING_DISTRIBUTION_ID }}
+          aws-region: ${{ vars.AWS_STAGING_REGION }}
+
+      - name: Note the staging URL
+        run: echo "Staging publish finished. Bookmark the FluidTetrisStaging SiteUrl output. It does not change between deploys." >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-prod:
+    needs: [build, synth]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    env:
+      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_PROD_DEPLOY_ROLE_ARN }}
+      AWS_BUCKET_NAME: ${{ vars.AWS_PROD_BUCKET_NAME }}
+      AWS_DISTRIBUTION_ID: ${{ vars.AWS_PROD_DISTRIBUTION_ID }}
+      AWS_REGION: ${{ vars.AWS_PROD_REGION }}
+    steps:
+      - name: Require prod GitHub variables
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in AWS_DEPLOY_ROLE_ARN AWS_BUCKET_NAME AWS_DISTRIBUTION_ID AWS_REGION; do
+            if [ -z "${!name}" ]; then
+              echo "Missing GitHub variable: AWS_PROD_${name#AWS_}"
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            echo "Copy AWS_PROD_* from the FluidTetrisProd outputs. See DEPLOY.md."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: site-dist
+          path: dist
+
+      - uses: ./.github/actions/publish-site
+        with:
+          role-arn: ${{ vars.AWS_PROD_DEPLOY_ROLE_ARN }}
+          bucket-name: ${{ vars.AWS_PROD_BUCKET_NAME }}
+          distribution-id: ${{ vars.AWS_PROD_DISTRIBUTION_ID }}
+          aws-region: ${{ vars.AWS_PROD_REGION }}
+
+      - name: Note the prod URL
+        run: echo "Production publish finished for ${{ github.ref_name }}. The URL is the FluidTetrisProd SiteUrl output." >> "$GITHUB_STEP_SUMMARY"
