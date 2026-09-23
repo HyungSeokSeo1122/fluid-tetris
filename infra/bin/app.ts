@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib';
-import { SiteStack } from '../lib/site-stack';
+import { GitHubOidcStack } from '../lib/github-oidc-stack';
+import { SiteEnvironment, SiteStack } from '../lib/site-stack';
 
 const GITHUB_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const OIDC_PROVIDER_ARN_PATTERN =
@@ -14,6 +15,7 @@ const account = requireAccount(app);
 const region = resolveRegion(app);
 const githubRepo = requireGithubRepo(app);
 const githubOidcProviderArn = readContext(app, 'githubOidcProviderArn');
+const environments = selectedEnvironments(app);
 
 if (account === '000000000000') {
   console.warn(
@@ -25,14 +27,52 @@ if (githubOidcProviderArn) {
   assertOidcProviderArn(githubOidcProviderArn);
 }
 
-const stack = new SiteStack(app, 'FluidTetrisSite', {
-  env: { account, region },
-  description: 'Fluid Tetris static site (private S3 + CloudFront OAC).',
-  githubRepo,
-  githubOidcProviderArn,
-});
+const awsEnv = { account, region };
+const providerArn = githubOidcProviderArn
+  ? githubOidcProviderArn
+  : new GitHubOidcStack(app, 'FluidTetrisOidc', {
+      env: awsEnv,
+      description: 'Shared GitHub Actions OIDC provider for Fluid Tetris staging and prod.',
+    }).providerArn;
 
-cdk.Tags.of(stack).add('Project', 'fluid-tetris');
+for (const siteEnvironment of environments) {
+  const stack = new SiteStack(app, stackId(siteEnvironment), {
+    env: awsEnv,
+    description: `Fluid Tetris ${siteEnvironment} static site (private S3 + CloudFront OAC).`,
+    siteEnvironment,
+    githubRepo,
+    githubOidcProviderArn: providerArn,
+  });
+  cdk.Tags.of(stack).add('Project', 'fluid-tetris');
+  cdk.Tags.of(stack).add('Environment', siteEnvironment);
+}
+
+function selectedEnvironments(scope: cdk.App): SiteEnvironment[] {
+  const selected = readContext(scope, 'env');
+  if (selected === undefined) {
+    return ['staging', 'prod'];
+  }
+  switch (selected) {
+    case 'staging':
+    case 'prod':
+      return [selected];
+    default:
+      throw new Error(`env must be staging or prod. Received: ${selected}`);
+  }
+}
+
+function stackId(siteEnvironment: SiteEnvironment): string {
+  switch (siteEnvironment) {
+    case 'staging':
+      return 'FluidTetrisStaging';
+    case 'prod':
+      return 'FluidTetrisProd';
+    default: {
+      const neverEnv: never = siteEnvironment;
+      throw new Error(`Unknown environment: ${neverEnv}`);
+    }
+  }
+}
 
 function requireAccount(scope: cdk.App): string {
   const account = readContext(scope, 'account') ?? process.env.CDK_DEFAULT_ACCOUNT;

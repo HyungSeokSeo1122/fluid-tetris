@@ -4,27 +4,28 @@ import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
+import { GITHUB_OIDC_HOST } from './github-oidc-stack';
 
-const GITHUB_OIDC_URL = 'https://token.actions.githubusercontent.com';
-const GITHUB_OIDC_HOST = 'token.actions.githubusercontent.com';
+export type SiteEnvironment = 'staging' | 'prod';
 
 export interface SiteStackProps extends cdk.StackProps {
+  readonly siteEnvironment: SiteEnvironment;
   /** GitHub repository allowed to assume the deploy role, as `owner/name`. */
   readonly githubRepo: string;
-  /**
-   * ARN of an account-wide GitHub OIDC provider that already exists.
-   * Leave unset on a fresh account so this stack creates the provider.
-   */
-  readonly githubOidcProviderArn?: string;
+  /** ARN of the account-wide GitHub OIDC provider. Shared by both environments. */
+  readonly githubOidcProviderArn: string;
 }
 
 /**
- * Private S3 bucket and a CloudFront distribution for the Vite `dist/` build.
+ * Private S3 bucket and a CloudFront distribution for one environment.
  * Objects stay private; viewers only reach them through Origin Access Control.
  */
 export class SiteStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: SiteStackProps) {
     super(scope, id, props);
+
+    const siteEnvironment = props.siteEnvironment;
+    const retention = bucketRetention(siteEnvironment);
 
     cdk.Annotations.of(this).acknowledgeWarning(
       '@aws-cdk/aws-cloudfront-origins:listBucketSecurityRisk',
@@ -37,8 +38,8 @@ export class SiteStack extends cdk.Stack {
       enforceSSL: true,
       objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
       versioned: false,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
+      removalPolicy: retention.removalPolicy,
+      autoDeleteObjects: retention.autoDeleteObjects,
       lifecycleRules: [
         {
           id: 'abort-incomplete-multipart',
@@ -55,7 +56,7 @@ export class SiteStack extends cdk.Stack {
     });
 
     const distribution = new cloudfront.Distribution(this, 'SiteDistribution', {
-      comment: 'Fluid Tetris',
+      comment: `Fluid Tetris ${siteEnvironment}`,
       defaultRootObject: 'index.html',
       priceClass: cloudfront.PriceClass.PRICE_CLASS_200,
       httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
@@ -67,17 +68,11 @@ export class SiteStack extends cdk.Stack {
       errorResponses: [spaError(403), spaError(404)],
     });
 
-    const providerArn = githubOidcProviderArn(this, props.githubOidcProviderArn);
     const deployRole = new iam.Role(this, 'GitHubActionsRole', {
-      roleName: 'fluid-tetris-github-deploy',
-      description: 'Assumed by GitHub Actions on main to publish Fluid Tetris.',
+      roleName: `fluid-tetris-github-deploy-${siteEnvironment}`,
+      description: roleDescription(siteEnvironment),
       maxSessionDuration: cdk.Duration.hours(1),
-      assumedBy: new iam.WebIdentityPrincipal(providerArn, {
-        StringEquals: {
-          [`${GITHUB_OIDC_HOST}:aud`]: 'sts.amazonaws.com',
-          [`${GITHUB_OIDC_HOST}:sub`]: `repo:${props.githubRepo}:ref:refs/heads/main`,
-        },
-      }),
+      assumedBy: new iam.WebIdentityPrincipal(props.githubOidcProviderArn, trustConditions(siteEnvironment, props.githubRepo)),
     });
 
     const deployPolicy = new iam.Policy(this, 'GitHubDeployPolicy', {
@@ -101,26 +96,114 @@ export class SiteStack extends cdk.Stack {
     });
     deployPolicy.attachToRole(deployRole);
 
+    const prefix = variablePrefix(siteEnvironment);
     new cdk.CfnOutput(this, 'AwsBucketName', {
-      description: 'GitHub variable AWS_BUCKET_NAME',
+      description: `GitHub variable AWS_${prefix}_BUCKET_NAME`,
       value: bucket.bucketName,
     });
     new cdk.CfnOutput(this, 'AwsDistributionId', {
-      description: 'GitHub variable AWS_DISTRIBUTION_ID',
+      description: `GitHub variable AWS_${prefix}_DISTRIBUTION_ID`,
       value: distribution.distributionId,
     });
     new cdk.CfnOutput(this, 'AwsDeployRoleArn', {
-      description: 'GitHub variable AWS_DEPLOY_ROLE_ARN',
+      description: `GitHub variable AWS_${prefix}_DEPLOY_ROLE_ARN`,
       value: deployRole.roleArn,
     });
     new cdk.CfnOutput(this, 'AwsRegion', {
-      description: 'GitHub variable AWS_REGION',
+      description: `GitHub variable AWS_${prefix}_REGION`,
       value: this.region,
     });
     new cdk.CfnOutput(this, 'SiteUrl', {
-      description: 'HTTPS URL on the default CloudFront domain',
+      description: `${label(siteEnvironment)} HTTPS URL on the default CloudFront domain`,
       value: `https://${distribution.distributionDomainName}`,
     });
+  }
+}
+
+function bucketRetention(siteEnvironment: SiteEnvironment): {
+  removalPolicy: cdk.RemovalPolicy;
+  autoDeleteObjects: boolean;
+} {
+  switch (siteEnvironment) {
+    case 'staging':
+      return { removalPolicy: cdk.RemovalPolicy.DESTROY, autoDeleteObjects: true };
+    case 'prod':
+      return { removalPolicy: cdk.RemovalPolicy.RETAIN, autoDeleteObjects: false };
+    default: {
+      const neverEnv: never = siteEnvironment;
+      throw new Error(`Unknown environment: ${neverEnv}`);
+    }
+  }
+}
+
+function variablePrefix(siteEnvironment: SiteEnvironment): 'STAGING' | 'PROD' {
+  switch (siteEnvironment) {
+    case 'staging':
+      return 'STAGING';
+    case 'prod':
+      return 'PROD';
+    default: {
+      const neverEnv: never = siteEnvironment;
+      throw new Error(`Unknown environment: ${neverEnv}`);
+    }
+  }
+}
+
+function label(siteEnvironment: SiteEnvironment): string {
+  switch (siteEnvironment) {
+    case 'staging':
+      return 'Staging';
+    case 'prod':
+      return 'Production';
+    default: {
+      const neverEnv: never = siteEnvironment;
+      throw new Error(`Unknown environment: ${neverEnv}`);
+    }
+  }
+}
+
+function roleDescription(siteEnvironment: SiteEnvironment): string {
+  switch (siteEnvironment) {
+    case 'staging':
+      return 'Assumed by GitHub Actions on main to publish Fluid Tetris staging.';
+    case 'prod':
+      return 'Assumed by GitHub Actions on v* tags to publish Fluid Tetris production.';
+    default: {
+      const neverEnv: never = siteEnvironment;
+      throw new Error(`Unknown environment: ${neverEnv}`);
+    }
+  }
+}
+
+/**
+ * Staging trusts pushes and manual runs of this repo on main.
+ * Prod trusts only `v*` tag pushes. `job_workflow_ref` is not pinned:
+ * GitHub sets that claim for reusable workflows, and this deploy job is not one.
+ */
+function trustConditions(siteEnvironment: SiteEnvironment, githubRepo: string): iam.Conditions {
+  const audienceKey = `${GITHUB_OIDC_HOST}:aud`;
+  const subjectKey = `${GITHUB_OIDC_HOST}:sub`;
+  switch (siteEnvironment) {
+    case 'staging':
+      return {
+        StringEquals: {
+          [audienceKey]: 'sts.amazonaws.com',
+          [subjectKey]: `repo:${githubRepo}:ref:refs/heads/main`,
+        },
+      };
+    case 'prod':
+      return {
+        StringEquals: {
+          [audienceKey]: 'sts.amazonaws.com',
+        },
+        StringLike: {
+          [subjectKey]: `repo:${githubRepo}:ref:refs/tags/v*`,
+        },
+      };
+    default: {
+      const neverEnv: never = siteEnvironment;
+      throw new Error(`Unknown environment: ${neverEnv}`);
+    }
   }
 }
 
@@ -145,19 +228,4 @@ function spaError(httpStatus: 403 | 404): cloudfront.ErrorResponse {
     responsePagePath: '/index.html',
     ttl: cdk.Duration.seconds(0),
   };
-}
-
-function githubOidcProviderArn(scope: cdk.Stack, existingArn: string | undefined): string {
-  if (existingArn) {
-    return iam.OpenIdConnectProvider.fromOpenIdConnectProviderArn(
-      scope,
-      'GitHubOidc',
-      existingArn,
-    ).openIdConnectProviderArn;
-  }
-
-  return new iam.OidcProviderNative(scope, 'GitHubOidc', {
-    url: GITHUB_OIDC_URL,
-    clientIds: ['sts.amazonaws.com'],
-  }).openIdConnectProviderArn;
 }

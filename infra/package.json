@@ -5,7 +5,7 @@
   "description": "CDK app for the Fluid Tetris static site (private S3 + CloudFront).",
   "scripts": {
     "synth": "cdk synth --quiet",
-    "check": "tsc --noEmit && cdk synth --quiet && node scripts/check-template.mjs",
+    "check": "tsc --noEmit && rm -rf cdk.out && cdk synth --quiet && node scripts/check-template.mjs",
     "diff": "cdk diff",
     "deploy": "cdk deploy",
     "destroy": "cdk destroy"

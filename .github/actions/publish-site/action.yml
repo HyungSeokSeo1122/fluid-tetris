@@ -1,0 +1,53 @@
+name: Publish site
+description: Sync dist/ to a private S3 bucket and invalidate CloudFront.
+inputs:
+  role-arn:
+    description: IAM role ARN assumed via GitHub OIDC
+    required: true
+  bucket-name:
+    description: Destination bucket name
+    required: true
+  distribution-id:
+    description: CloudFront distribution id
+    required: true
+  aws-region:
+    description: Bucket region
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.role-arn }}
+        aws-region: ${{ inputs.aws-region }}
+        role-session-name: fluid-tetris-deploy
+
+    - name: Publish dist to S3
+      shell: bash
+      env:
+        AWS_BUCKET_NAME: ${{ inputs.bucket-name }}
+      run: |
+        set -euo pipefail
+        # Delete stale hashed files only under assets/. A root sync that
+        # excludes index.html and passes --delete would remove index.html,
+        # because excluded keys look absent to the delete pass.
+        aws s3 sync dist/assets "s3://${AWS_BUCKET_NAME}/assets" \
+          --delete \
+          --cache-control "public,max-age=31536000,immutable"
+        aws s3 sync dist "s3://${AWS_BUCKET_NAME}" \
+          --exclude "assets/*" \
+          --exclude "index.html" \
+          --cache-control "public,max-age=300"
+        aws s3 cp dist/index.html "s3://${AWS_BUCKET_NAME}/index.html" \
+          --cache-control "no-cache, no-store, must-revalidate" \
+          --content-type "text/html; charset=utf-8"
+
+    - name: Invalidate CloudFront
+      shell: bash
+      env:
+        AWS_DISTRIBUTION_ID: ${{ inputs.distribution-id }}
+      run: |
+        set -euo pipefail
+        aws cloudfront create-invalidation \
+          --distribution-id "${AWS_DISTRIBUTION_ID}" \
+          --paths "/index.html" "/"
