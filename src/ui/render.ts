@@ -1,6 +1,6 @@
 import { liveBalance } from '../config';
 import { COLS, VISIBLE_ROWS, VISIBLE_TOP, type Cell } from '../fluid/grid';
-import { ghostOf, minos, type Active, type Mino } from '../game/piece';
+import { minos, softLanding, type Active, type Droop, type Mino } from '../game/piece';
 import { SHAPES } from '../game/tetrominoes';
 import type { GameState, Slide } from '../game/engine';
 import { drawCluster, drawDroplet, drawNeck, mixWhite, rgbFor, rgba, type Rgb } from './liquid';
@@ -185,7 +185,16 @@ export function renderBoard(
 
   if (state.active && state.status !== 'gameover') {
     drawGhost(ctx, state, toPixel, cell);
-    drawActive(ctx, state.active, state.fallVisual, state.time, balance.viscosity, toPixel, cell, reducedMotion);
+    drawActive(
+      ctx,
+      visualActive(state.active, state.dripFrom, reducedMotion ? 1 : state.dripBlend),
+      state.fallVisual,
+      state.time,
+      balance.viscosity,
+      toPixel,
+      cell,
+      reducedMotion,
+    );
   }
 
   drawBits(ctx, state, toPixel, cell, reducedMotion);
@@ -236,6 +245,26 @@ export function renderBoard(
   ctx.lineWidth = 2;
   ctx.stroke();
   ctx.restore();
+}
+
+function visualActive(active: Active, from: Droop, blend: number): Active {
+  if (blend >= 1) return active;
+  const t = Math.max(0, Math.min(1, blend));
+  const ease = t * t * (3 - 2 * t);
+  const droop: Droop = [0, 0, 0, 0];
+  for (let index = 0; index < 4; index += 1) {
+    const start = from[index] ?? 0;
+    const end = active.droop[index] ?? 0;
+    droop[index] = start + (end - start) * ease;
+  }
+  return {
+    type: active.type,
+    rot: active.rot,
+    x: active.x,
+    y: active.y,
+    color: active.color,
+    droop,
+  };
 }
 
 function drawBits(
@@ -304,20 +333,21 @@ function drawGhost(
 ): void {
   const active = state.active;
   if (!active) return;
-  const ghost = ghostOf(state.grid, active);
+  const ghost = softLanding(state.grid, active);
   const current = minos(active);
   const landed = minos(ghost);
   if (sameCells(current, landed)) return;
   const color = rgbFor(active.color);
-  const occupied = new Set(current.map((mino) => `${mino.x},${mino.y}`));
+  connectCells(ctx, landed, color, cell * 0.12, 0.28, (mino) => toPixel(mino.x + 0.5, mino.y + 0.5));
   for (const mino of landed) {
-    if (occupied.has(`${mino.x},${mino.y}`)) continue;
     if (mino.y + 1 < VISIBLE_TOP || mino.y > VISIBLE_TOP + VISIBLE_ROWS) continue;
     const pixel = toPixel(mino.x, mino.y);
-    ctx.beginPath();
-    ctx.arc(pixel.x + cell * 0.5, pixel.y + cell * 0.5, cell * 0.28, 0, Math.PI * 2);
-    ctx.strokeStyle = rgba(color, 0.45);
-    ctx.lineWidth = 2;
+    const inset = cell * 0.16;
+    roundRect(ctx, pixel.x + inset, pixel.y + inset, cell - inset * 2, cell - inset * 2, cell * 0.32);
+    ctx.fillStyle = rgba(color, 0.12);
+    ctx.fill();
+    ctx.strokeStyle = rgba(color, 0.62);
+    ctx.lineWidth = Math.max(1.5, cell * 0.045);
     ctx.stroke();
   }
 }
@@ -336,6 +366,7 @@ function drawActive(
   const keys = new Set(cells.map((mino) => `${mino.x},${mino.y}`));
   const color = rgbFor(active.color);
   connectCells(ctx, cells, color, cell * 0.18, 0.7, (mino) => toPixel(mino.x + 0.5, mino.y + fallVisual + 0.5));
+  drawDripStrands(ctx, active, cells, color, cell, fallVisual, toPixel);
   for (const mino of cells) {
     if (mino.y + fallVisual > VISIBLE_TOP + VISIBLE_ROWS + 0.4) continue;
     if (mino.y + fallVisual + 1 < VISIBLE_TOP - 0.4) continue;
@@ -357,17 +388,53 @@ function drawActive(
   }
 }
 
-export function renderPreview(
+function drawDripStrands(
   ctx: CanvasRenderingContext2D,
-  state: GameState,
+  active: Active,
+  cells: readonly Mino[],
+  color: Rgb,
+  cell: number,
+  fallVisual: number,
+  toPixel: (x: number, y: number) => Point,
+): void {
+  const shape = SHAPES[active.type][active.rot & 3];
+  if (!shape) return;
+  for (let i = 0; i < shape.length; i += 1) {
+    const a = shape[i];
+    const ma = cells[i];
+    if (!a || !ma) continue;
+    for (let j = i + 1; j < shape.length; j += 1) {
+      const b = shape[j];
+      const mb = cells[j];
+      if (!b || !mb) continue;
+      if (Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) !== 1) continue;
+      const dist = Math.abs(ma.x - mb.x) + Math.abs(ma.y - mb.y);
+      if (dist <= 1.2) continue;
+      const pa = toPixel(ma.x + 0.5, ma.y + fallVisual + 0.5);
+      const pb = toPixel(mb.x + 0.5, mb.y + fallVisual + 0.5);
+      ctx.save();
+      ctx.strokeStyle = rgba(color, 0.55);
+      ctx.lineWidth = cell * 0.2;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(pa.x, pa.y);
+      ctx.lineTo(pb.x, pb.y);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+}
+
+function drawThumb(
+  ctx: CanvasRenderingContext2D,
+  type: GameState['next']['type'],
+  colorIndex: number,
+  left: number,
+  top: number,
   width: number,
   height: number,
 ): void {
-  ctx.clearRect(0, 0, width, height);
-  roundRect(ctx, 0, 0, width, height, 12);
-  ctx.fillStyle = '#10192a';
-  ctx.fill();
-  const shape = SHAPES[state.next.type][0];
+  const shape = SHAPES[type][0];
   let minX = 4;
   let minY = 4;
   let maxX = 0;
@@ -381,9 +448,9 @@ export function renderPreview(
   const spanX = maxX - minX + 1;
   const spanY = maxY - minY + 1;
   const cell = Math.min((width - 24) / spanX, (height - 24) / spanY);
-  const originX = (width - spanX * cell) / 2 - minX * cell;
-  const originY = (height - spanY * cell) / 2 - minY * cell;
-  const color = rgbFor(state.next.color);
+  const originX = left + (width - spanX * cell) / 2 - minX * cell;
+  const originY = top + (height - spanY * cell) / 2 - minY * cell;
+  const color = rgbFor(colorIndex);
   const placed = shape.map(([x, y]) => ({ x, y }));
   connectCells(ctx, placed, color, cell * 0.18, 0.75, (mino) => ({
     x: originX + (mino.x + 0.5) * cell,
@@ -399,6 +466,30 @@ export function renderPreview(
       }
     }
     drawCluster(ctx, originX + x * cell, originY + y * cell, cell, color, 0.2, px * 0.05, py * 0.05, 0, x, y);
+  }
+}
+
+export function renderPreview(
+  ctx: CanvasRenderingContext2D,
+  state: GameState,
+  width: number,
+  height: number,
+): void {
+  ctx.clearRect(0, 0, width, height);
+  roundRect(ctx, 0, 0, width, height, 12);
+  ctx.fillStyle = '#10192a';
+  ctx.fill();
+  if (state.hold) {
+    drawThumb(ctx, state.next.type, state.next.color, 0, 0, width * 0.5, height);
+    drawThumb(ctx, state.hold.type, state.hold.color, width * 0.5, 0, width * 0.5, height);
+    ctx.font = '600 11px "Avenir Next", "Segoe UI", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = 'rgba(147, 168, 188, 0.9)';
+    ctx.fillText('Next', width * 0.25, 8);
+    ctx.fillText('Hold', width * 0.75, 8);
+  } else {
+    drawThumb(ctx, state.next.type, state.next.color, 0, 0, width, height);
   }
   ctx.strokeStyle = 'rgba(0, 229, 255, 0.25)';
   roundRect(ctx, 1, 1, width - 2, height - 2, 12);
@@ -419,7 +510,8 @@ function connectCells(
     for (let j = i + 1; j < cells.length; j += 1) {
       const b = cells[j];
       if (!b) continue;
-      if (Math.abs(a.x - b.x) + Math.abs(a.y - b.y) !== 1) continue;
+      const dist = Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+      if (Math.abs(dist - 1) > 0.2) continue;
       const pa = project(a);
       const pb = project(b);
       drawNeck(ctx, pa.x, pa.y, pb.x, pb.y, radius, color, alpha);

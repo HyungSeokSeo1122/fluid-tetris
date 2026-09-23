@@ -43,6 +43,8 @@ function soundFor(event: GameEvent): SoundKind {
       return 'clear';
     case 'phase':
       return 'phase';
+    case 'hold':
+      return 'move';
     case 'gameover':
       return 'gameover';
     default: {
@@ -191,6 +193,7 @@ function boot(): void {
           rotate: 0,
           soft: false,
           hard: false,
+          hold: false,
           pausePressed: false,
           restart: false,
           ...partial,

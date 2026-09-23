@@ -1,9 +1,9 @@
 import { config, liveBalance, stageForLines } from './config';
-import { createGrid } from './fluid/grid';
-import { findFullRows, clearRows, gravity, seep } from './fluid/sim';
+import { COLS, createGrid } from './fluid/grid';
+import { findFullRows, clearRows, gravity, hasFloating, seep, settleGrid } from './fluid/sim';
 import { createGame, updateGame, type GameState } from './game/engine';
-import type { Frame } from './game/input';
-import { canDroop, canGroupFall, createActive, fits } from './game/piece';
+import { isHoldKey, type Frame } from './game/input';
+import { canDroop, canGroupFall, createActive, droopOnce, fits, softLanding } from './game/piece';
 import { lineScore } from './game/scoring';
 import { PIECE_TYPES, SHAPES } from './game/tetrominoes';
 
@@ -18,6 +18,7 @@ function idle(): Frame {
     rotate: 0,
     soft: false,
     hard: false,
+    hold: false,
     pausePressed: false,
     restart: false,
   };
@@ -220,6 +221,179 @@ function checkOoze(): void {
   assert(game.active.droop[0] === 0 && game.active.droop[2] === 0, 'supported minos stay put');
 }
 
+function columnHeights(grid: GameState['grid']): number[] {
+  const heights = Array<number>(COLS).fill(0);
+  for (let y = 0; y < grid.length; y += 1) {
+    const row = grid[y];
+    if (!row) continue;
+    for (let x = 0; x < COLS; x += 1) {
+      if ((row[x]?.color ?? -1) >= 0) heights[x] += 1;
+    }
+  }
+  return heights;
+}
+
+function assertSettled(grid: GameState['grid'], label: string): void {
+  assert(!hasFloating(grid, new Set(), new Set()), `${label} leaves a floating cell`);
+  const heights = columnHeights(grid);
+  for (let x = 0; x < COLS - 1; x += 1) {
+    const left = heights[x] ?? 0;
+    const right = heights[x + 1] ?? 0;
+    assert(Math.abs(left - right) < 2, `${label} leaves a stuck step at column ${x}`);
+  }
+}
+
+function checkGapOoze(): void {
+  const grid = createGrid();
+  const active = createActive('I', 0);
+  active.x = 3;
+  active.y = 18;
+  grid[20][4] = { color: 1, glow: 0 };
+  grid[20][5] = { color: 1, glow: 0 };
+  grid[21][3] = { color: 1, glow: 0 };
+  assert(droopOnce(grid, active), 'a mino can reach a gap');
+  assert(active.droop[3] === 1, 'ooze prefers the deeper gap');
+  assert(active.droop[0] === 0, 'the shallow pocket waits');
+}
+
+function checkGhost(): void {
+  const grid = createGrid();
+  for (let x = 0; x < COLS; x += 1) grid[21][x] = { color: 1, glow: 0 };
+  const active = createActive('T', 0);
+  active.y = 4;
+  const droop = active.droop.reduce((sum, value) => sum + value, 0);
+  const ghost = softLanding(grid, active);
+  const ghostDroop = ghost.droop.reduce((sum, value) => sum + value, 0);
+  assert(ghost.y > active.y, 'ghost shows the landing row');
+  assert(ghostDroop === droop, 'ghost keeps the soft shape');
+  assert(!canGroupFall(grid, ghost), 'ghost rests on the stack');
+  assert(canGroupFall(grid, active), 'the live piece is still above its ghost');
+}
+
+function requireActive(game: GameState) {
+  const active = game.active;
+  if (!active) throw new Error('expected an active piece');
+  return active;
+}
+
+function requireHold(game: GameState) {
+  const held = game.hold;
+  if (!held) throw new Error('expected a held piece');
+  return held;
+}
+
+function checkHold(): void {
+  const game = createGame(0);
+  wipe(game);
+  const opening = createActive('T', 2);
+  opening.rot = 2;
+  opening.x = 4;
+  opening.droop = [1, 0, 0, 0];
+  game.active = opening;
+  game.next = { type: 'L', color: 4 };
+  game.holdSpent = false;
+  const score = game.score;
+  const frame = idle();
+  frame.hold = true;
+  updateGame(game, frame, 0.016);
+  const held = requireHold(game);
+  const incoming = requireActive(game);
+  assert(held.type === 'T' && held.color === 2, 'held piece keeps type and color');
+  assert(incoming.type === 'L' && incoming.color === 4, 'empty hold pulls next');
+  assert(incoming.rot === 0, 'incoming piece spawns upright');
+  assert(incoming.droop.every((value) => value === 0), 'swap respawns soft');
+  assert(game.holdSpent, 'hold is spent');
+  assert(game.score === score, 'hold does not score');
+  assert(
+    game.grid.every((row) => row.every((cell) => cell.color < 0)),
+    'hold does not lock the piece',
+  );
+
+  const spent = idle();
+  spent.hold = true;
+  const activeType = incoming.type;
+  const nextType = game.next.type;
+  updateGame(game, spent, 0.016);
+  assert(requireActive(game).type === activeType, 'second hold ignored');
+  assert(requireHold(game).type === 'T', 'hold box unchanged');
+  assert(game.next.type === nextType, 'next unchanged while hold is spent');
+
+  const hard = idle();
+  hard.hard = true;
+  updateGame(game, hard, 0.016);
+  assert(game.status === 'playing', 'lock after hold still playing');
+  assert(!game.holdSpent, 'lock rearms hold');
+  const returning = requireHold(game).type;
+  const outgoing = requireActive(game).type;
+  const swap = idle();
+  swap.hold = true;
+  updateGame(game, swap, 0.016);
+  const returned = requireActive(game);
+  assert(returned.type === returning && returned.color === 2, 'swap brings the held piece back');
+  assert(requireHold(game).type === outgoing, 'active piece enters hold');
+  assert(returned.rot === 0, 'returned piece uses spawn orientation');
+  assert(isHoldKey('KeyC') && isHoldKey('ShiftLeft') && isHoldKey('ShiftRight'), 'hold keys');
+  assert(!isHoldKey('KeyX'), 'rotate is not hold');
+}
+
+function checkSettle(): void {
+  const gap = createGrid();
+  gap[19][0] = { color: 4, glow: 0 };
+  gap[19][1] = { color: 1, glow: 0 };
+  gap[20][0] = { color: 4, glow: 0 };
+  gap[21][0] = { color: 4, glow: 0 };
+  gap[21][1] = { color: 4, glow: 0 };
+  seep(gap, new Set(), new Set(), true, config.tuning.seepHoleDrop);
+  assert(gap[20][1].color === 4, 'lip drips into the one-deep gap');
+  assert(gap[19][0].color < 0, 'lip source cleared');
+  assert(gap[19][1].color === 1, 'neighbor cap stays');
+  assert(gap[20][0].color === 4, 'support under the lip stays');
+
+  const pile = createGrid();
+  for (let y = 18; y <= 21; y += 1) pile[y][0] = { color: 2, glow: 0 };
+  settleGrid(pile, new Set(), new Set(), config.tuning.settlePasses, config.tuning.seepHoleDrop);
+  assertSettled(pile, 'tall column');
+  let piled = 0;
+  for (const row of pile) {
+    for (const cell of row) if (cell.color === 2) piled += 1;
+  }
+  assert(piled === 4, `settle keeps every cell (${piled})`);
+
+  const cleared = createGrid();
+  for (let x = 0; x < COLS; x += 1) cleared[21][x] = { color: 0, glow: 0 };
+  cleared[18][4] = { color: 3, glow: 0 };
+  cleared[19][3] = { color: 3, glow: 0 };
+  cleared[19][4] = { color: 3, glow: 0 };
+  cleared[19][5] = { color: 3, glow: 0 };
+  cleared[20][3] = { color: 3, glow: 0 };
+  cleared[20][5] = { color: 3, glow: 0 };
+  clearRows(cleared, [21]);
+  settleGrid(cleared, new Set(), new Set(), config.tuning.settlePasses, config.tuning.seepHoleDrop);
+  assertSettled(cleared, 'post-clear island');
+  assert(cleared[21][4].color === 3, 'the hole under the island fills');
+
+  const game = createGame(0);
+  wipe(game);
+  for (let x = 0; x < COLS; x += 1) game.grid[21][x] = { color: 0, glow: 0 };
+  game.grid[20][0] = { color: 3, glow: 0 };
+  game.grid[18][0] = { color: 3, glow: 0 };
+  updateGame(game, idle(), 0.016);
+  assert(game.pending !== null, 'clear waits out the flash');
+  let guard = 0;
+  while (game.pending && guard < 20) {
+    updateGame(game, idle(), 0.05);
+    guard += 1;
+  }
+  assert(game.pending === null, 'clear finishes');
+  assertSettled(game.grid, 'engine settle');
+  let fallen = 0;
+  for (const row of game.grid) {
+    for (const cell of row) if (cell.color === 3) fallen += 1;
+  }
+  assert(fallen === 2, `both cells settle (${fallen})`);
+  assert(game.grid[21][0].color === 3, 'a settled cell rests on the floor');
+}
+
 export function runChecks(): void {
   checkPalette();
   checkScores();
@@ -228,4 +402,8 @@ export function runChecks(): void {
   checkClearAndPhase();
   checkGameOver();
   checkOoze();
+  checkGapOoze();
+  checkGhost();
+  checkHold();
+  checkSettle();
 }

@@ -102,16 +102,45 @@ export function canGroupFall(grid: Cell[][], active: Active): boolean {
   return ok;
 }
 
-/** Drip the lowest free mino one row into a gap. Returns true when it moved. */
-export function droopOnce(grid: Cell[][], active: Active): boolean {
+type DroopChoice = { index: number; air: number };
+
+function bestDroop(grid: Cell[][], active: Active): DroopChoice | null {
   const cells = minos(active);
-  const order = [0, 1, 2, 3].sort((a, b) => (cells[b]?.y ?? 0) - (cells[a]?.y ?? 0));
-  for (const index of order) {
+  const occupied = new Set(cells.map((cell) => `${cell.x},${cell.y}`));
+  let best: DroopChoice | null = null;
+  for (let index = 0; index < cells.length; index += 1) {
+    const cell = cells[index];
+    if (!cell) continue;
     active.droop[index] += 1;
-    if (fits(grid, active)) return true;
+    const ok = fits(grid, active);
     active.droop[index] -= 1;
+    if (!ok) continue;
+    let air = 0;
+    for (let ny = cell.y + 1; ny < ROWS; ny += 1) {
+      if (occupied.has(`${cell.x},${ny}`)) break;
+      if ((grid[ny]?.[cell.x]?.color ?? -1) >= 0) break;
+      air += 1;
+    }
+    if (air <= 0) continue;
+    const bestY = best ? (cells[best.index]?.y ?? -1) : -1;
+    if (!best || air > best.air || (air === best.air && cell.y > bestY)) {
+      best = { index, air };
+    }
   }
-  return false;
+  return best;
+}
+
+/** Drip the mino over the deepest gap by one row. Returns true when it moved. */
+export function droopOnce(grid: Cell[][], active: Active): boolean {
+  const best = bestDroop(grid, active);
+  if (!best) return false;
+  active.droop[best.index] += 1;
+  return true;
+}
+
+/** Air under the next mino that can drip. Zero when the piece cannot ooze. */
+export function droopAir(grid: Cell[][], active: Active): number {
+  return bestDroop(grid, active)?.air ?? 0;
 }
 
 export function canDroop(grid: Cell[][], active: Active): boolean {
@@ -126,13 +155,19 @@ export function droopFully(grid: Cell[][], active: Active): void {
   while (droopOnce(grid, active) && guard < ROWS * 4) guard += 1;
 }
 
-export function ghostOf(grid: Cell[][], active: Active): Active {
+/** Where the current soft shape would land if it fell as a group, without further ooze. */
+export function softLanding(grid: Cell[][], active: Active): Active {
   const ghost = cloneActive(active);
   let guard = 0;
   while (canGroupFall(grid, ghost) && guard < ROWS) {
     ghost.y += 1;
     guard += 1;
   }
+  return ghost;
+}
+
+export function ghostOf(grid: Cell[][], active: Active): Active {
+  const ghost = softLanding(grid, active);
   droopFully(grid, ghost);
   return ghost;
 }

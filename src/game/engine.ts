@@ -1,11 +1,12 @@
 import { config, liveBalance, stageForLines, type StageId } from '../config';
-import { clearRows, findFullRows, gravity, seep, type SimResult } from '../fluid/sim';
+import { clearRows, findFullRows, gravity, seep, settleGrid, type SimResult } from '../fluid/sim';
 import { COLS, ROWS, VISIBLE_TOP, createGrid, inBounds, occupiesSpawn, type Cell } from '../fluid/grid';
 import { type Frame } from './input';
 import {
   canDroop,
   canGroupFall,
   createActive,
+  droopAir,
   droopFully,
   droopOnce,
   fits,
@@ -13,6 +14,7 @@ import {
   tryRotate,
   tryShift,
   type Active,
+  type Droop,
 } from './piece';
 import { lineScore, mergePoints, rowClearMultiplier } from './scoring';
 import { shuffleBag, type PieceType } from './tetrominoes';
@@ -65,12 +67,15 @@ export type GameEvent =
   | { type: 'merge'; score: number; chain: number }
   | { type: 'clear'; rows: number; score: number }
   | { type: 'phase'; mode: StageId }
+  | { type: 'hold' }
   | { type: 'gameover' };
 
 export type GameState = {
   grid: Cell[][];
   active: Active | null;
   next: Preview;
+  hold: Preview | null;
+  holdSpent: boolean;
   bag: PieceType[];
   score: number;
   best: number;
@@ -86,6 +91,9 @@ export type GameState = {
   lockAcc: number;
   lockResets: number;
   seepBias: boolean;
+  oozeHurry: boolean;
+  dripFrom: Droop;
+  dripBlend: number;
   fallVisual: number;
   shake: number;
   banner: string;
@@ -121,6 +129,8 @@ export function createGame(best = 0): GameState {
     grid: createGrid(),
     active: createActive(pullType(bag), pullColor(opening.colorPoolSize)),
     next: { type: pullType(bag), color: pullColor(opening.colorPoolSize) },
+    hold: null,
+    holdSpent: false,
     bag,
     score: 0,
     best,
@@ -136,6 +146,9 @@ export function createGame(best = 0): GameState {
     lockAcc: 0,
     lockResets: 0,
     seepBias: false,
+    oozeHurry: false,
+    dripFrom: [0, 0, 0, 0],
+    dripBlend: 1,
     fallVisual: 0,
     shake: 0,
     banner: '',
@@ -284,6 +297,13 @@ function writePiece(state: GameState, active: Active, events: GameEvent[]): bool
   return topped;
 }
 
+function snapDrip(state: GameState): void {
+  const droop = state.active?.droop ?? [0, 0, 0, 0];
+  state.dripFrom = [droop[0], droop[1], droop[2], droop[3]];
+  state.dripBlend = 1;
+  state.oozeHurry = false;
+}
+
 function spawnNext(state: GameState): void {
   const balance = liveBalance(state.mode);
   const spawned = createActive(state.next.type, state.next.color);
@@ -292,6 +312,30 @@ function spawnNext(state: GameState): void {
     color: pullColor(balance.colorPoolSize),
   };
   state.active = spawned;
+  snapDrip(state);
+}
+
+function tryHold(state: GameState, events: GameEvent[]): boolean {
+  const active = state.active;
+  if (!active || state.holdSpent || state.status !== 'playing') return false;
+  const current: Preview = { type: active.type, color: active.color };
+  const stored = state.hold;
+  state.hold = current;
+  state.holdSpent = true;
+  state.fallAcc = 0;
+  state.oozeAcc = 0;
+  state.lockAcc = 0;
+  state.lockResets = 0;
+  state.fallVisual = 0;
+  if (stored) state.active = createActive(stored.type, stored.color);
+  else spawnNext(state);
+  snapDrip(state);
+  if (!state.active || !fits(state.grid, state.active)) {
+    state.active = null;
+    endGame(state, events);
+  }
+  events.push({ type: 'hold' });
+  return true;
 }
 
 function lockPiece(state: GameState, events: GameEvent[], hard: boolean): void {
@@ -303,10 +347,14 @@ function lockPiece(state: GameState, events: GameEvent[], hard: boolean): void {
     spawnBurst(state, cell.x + 0.5, cell.y + 0.5, active.color, hard ? 3 : 2, hard ? 4.5 : 2.2);
   }
   state.active = null;
+  state.holdSpent = false;
   state.lockAcc = 0;
   state.lockResets = 0;
   state.fallAcc = 0;
   state.oozeAcc = 0;
+  state.oozeHurry = false;
+  state.dripBlend = 1;
+  state.dripFrom = [0, 0, 0, 0];
   state.fallVisual = 0;
   events.push({ type: 'lock' });
   const rows = findFullRows(state.grid);
@@ -361,15 +409,31 @@ function fallAndOoze(state: GameState, soft: boolean, dt: number, events: GameEv
     state.fallVisual = Math.max(0, Math.min(1, state.fallAcc / interval));
     state.oozeAcc = 0;
     state.lockAcc = 0;
+    state.oozeHurry = false;
+    snapDrip(state);
     return;
   }
   state.fallVisual = 0;
   if (!state.active) return;
-  const oozeEvery = Math.max(0.05, balance.viscosity * config.tuning.oozeViscosityScale);
+  const follow = state.oozeHurry ? config.tuning.oozeGapFollow : 1;
+  const oozeEvery = Math.max(0.05, balance.viscosity * config.tuning.oozeViscosityScale * follow);
   state.oozeAcc += dt;
   if (state.oozeAcc >= oozeEvery) {
     state.oozeAcc = 0;
-    if (droopOnce(state.grid, state.active)) state.lockAcc = 0;
+    const before: Droop = [
+      state.active.droop[0],
+      state.active.droop[1],
+      state.active.droop[2],
+      state.active.droop[3],
+    ];
+    if (droopOnce(state.grid, state.active)) {
+      state.dripFrom = before;
+      state.dripBlend = 0;
+      state.lockAcc = 0;
+      state.oozeHurry = droopAir(state.grid, state.active) >= 2;
+    } else {
+      state.oozeHurry = false;
+    }
   }
   if (!state.active) return;
   if (canGroupFall(state.grid, state.active) || canDroop(state.grid, state.active)) {
@@ -380,16 +444,19 @@ function fallAndOoze(state: GameState, soft: boolean, dt: number, events: GameEv
   if (state.lockAcc >= config.tuning.lockDelay) lockPiece(state, events, false);
 }
 
-function absorb(state: GameState, result: SimResult, events: GameEvent[]): void {
+function absorb(state: GameState, result: SimResult, events: GameEvent[], duration?: number): void {
   for (const move of result.moves) {
     state.slides = state.slides.filter((slide) => slide.x !== move.nx || slide.y !== move.ny);
+    const drop = move.ny - move.y;
+    const dur =
+      duration ?? config.tuning.slideDuration * (drop > 0 ? config.tuning.dripSlideScale : 1);
     state.slides.push({
       x: move.nx,
       y: move.ny,
       sx: move.x,
       sy: move.y,
       age: 0,
-      dur: config.tuning.slideDuration,
+      dur,
     });
   }
   if (state.slides.length > 100) state.slides.splice(0, state.slides.length - 100);
@@ -397,11 +464,13 @@ function absorb(state: GameState, result: SimResult, events: GameEvent[]): void 
 }
 
 function fluidStep(state: GameState, dt: number, events: GameEvent[]): void {
+  let justCleared = false;
   if (state.pending) {
     state.pending.age += dt;
     if (state.pending.age < config.tuning.clearFlash) return;
     clearRows(state.grid, state.pending.rows);
     state.pending = null;
+    justCleared = true;
   }
   if (state.status !== 'playing') return;
 
@@ -414,6 +483,24 @@ function fluidStep(state: GameState, dt: number, events: GameEvent[]): void {
   const balance = liveBalance(state.mode);
   const blocked = activeBlocked(state.active);
   const frozen = new Set<number>();
+  if (justCleared) {
+    const settled = settleGrid(
+      state.grid,
+      blocked,
+      frozen,
+      config.tuning.settlePasses,
+      config.tuning.seepHoleDrop,
+    );
+    absorb(state, settled, events, config.tuning.settleSlide);
+    state.gravAcc = 0;
+    state.seepAcc = 0;
+    if (state.pending) return;
+    const formed = findFullRows(state.grid);
+    if (formed.length > 0) beginClear(state, formed, events);
+    if (occupiesSpawn(state.grid)) endGame(state, events);
+    return;
+  }
+
   const seepEvery = config.tuning.seepBase + balance.viscosity * config.tuning.seepViscosityScale;
   state.gravAcc += dt;
   state.seepAcc += dt;
@@ -423,7 +510,7 @@ function fluidStep(state: GameState, dt: number, events: GameEvent[]): void {
     absorb(state, gravity(state.grid, blocked, frozen), events);
   } else if (state.seepAcc >= seepEvery) {
     state.seepAcc = 0;
-    absorb(state, seep(state.grid, blocked, frozen, state.seepBias), events);
+    absorb(state, seep(state.grid, blocked, frozen, state.seepBias, config.tuning.seepHoleDrop), events);
     state.seepBias = !state.seepBias;
   }
 
@@ -437,6 +524,10 @@ function decay(state: GameState, dt: number): void {
   state.shake = Math.max(0, state.shake - dt * 2.1);
   state.clearPulse = Math.max(0, state.clearPulse - dt * 3.2);
   state.bannerLeft = Math.max(0, state.bannerLeft - dt);
+  if (state.dripBlend < 1) {
+    const blend = Math.max(0.05, config.tuning.oozeBlend);
+    state.dripBlend = Math.min(1, state.dripBlend + dt / blend);
+  }
   if (state.bannerLeft <= 0) state.banner = '';
   if (state.chain > 0) {
     state.chainLeft -= dt;
@@ -466,6 +557,10 @@ function decay(state: GameState, dt: number): void {
 
 function stepPlay(state: GameState, frame: Frame, dt: number, events: GameEvent[]): void {
   if (!state.active) return;
+  if (frame.hold && tryHold(state, events)) {
+    if (state.status === 'playing') fluidStep(state, dt, events);
+    return;
+  }
   if (frame.shifts > 0 && frame.dir !== 0) {
     for (let i = 0; i < frame.shifts; i += 1) {
       if (!state.active) break;
@@ -477,6 +572,7 @@ function stepPlay(state: GameState, frame: Frame, dt: number, events: GameEvent[
   }
   if (frame.rotate !== 0 && state.active && tryRotate(state.grid, state.active, frame.rotate)) {
     events.push({ type: 'rotate' });
+    snapDrip(state);
     noteLockReset(state);
   }
   if (frame.hard && state.active) hardDrop(state, events);
