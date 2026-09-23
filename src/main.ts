@@ -1,10 +1,12 @@
-import { config } from './config';
+import { config, stageForLines } from './config';
 import { createGame, updateGame, type GameEvent, type GameState } from './game/engine';
 import { InputController, type Frame, type TapName } from './game/input';
 import { createActive } from './game/piece';
 import { Sfx, type SoundKind } from './ui/audio';
 import { collectHud, syncHud } from './ui/hud';
 import { renderBoard, renderPreview } from './ui/render';
+import { bindStageGates } from './ui/settings';
+import { advanceRings, captureClearRings, type SplashRing } from './ui/splash';
 
 const BEST_KEY = 'fluid-tetris-best';
 
@@ -104,8 +106,13 @@ function boot(): void {
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const input = new InputController(config.tuning.dasDelay, config.tuning.dasRepeat);
   const sfx = new Sfx();
+  const rings: SplashRing[] = [];
   let game = createGame(loadBest());
   let savedBest = game.best;
+
+  bindStageGates(() => {
+    game.mode = stageForLines(game.lines).id;
+  });
 
   input.setMuteHandler(() => {
     const muted = sfx.toggle();
@@ -117,6 +124,7 @@ function boot(): void {
     board.focus();
     sfx.resume();
   });
+  document.addEventListener('pointerdown', () => sfx.resume());
 
   hud.mute.addEventListener('click', () => {
     sfx.toggle();
@@ -138,7 +146,7 @@ function boot(): void {
     const nextCtx = fitCanvas(next);
     const boardRect = board.getBoundingClientRect();
     const nextRect = next.getBoundingClientRect();
-    renderBoard(boardCtx, game, boardRect.width, boardRect.height, reducedMotion);
+    renderBoard(boardCtx, game, boardRect.width, boardRect.height, reducedMotion, rings);
     renderPreview(nextCtx, game, nextRect.width, nextRect.height);
   };
   const observer = new ResizeObserver(() => resize());
@@ -153,6 +161,7 @@ function boot(): void {
       },
       restart() {
         game = createGame(game.best);
+        rings.length = 0;
       },
       demoClear() {
         const row = game.grid.length - 1;
@@ -196,8 +205,10 @@ function boot(): void {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     const polled = input.poll(dt);
+    const softDropY = polled.soft && !polled.hard ? game.active?.y : undefined;
     if (polled.restart) {
       game = createGame(game.best);
+      rings.length = 0;
     } else {
       const events = updateGame(game, polled, dt);
       const played = new Set<SoundKind>();
@@ -207,16 +218,26 @@ function boot(): void {
         played.add(kind);
         sfx.play(kind);
       }
+      if (
+        softDropY !== undefined &&
+        game.active &&
+        game.active.y > softDropY &&
+        !events.some((event) => event.type === 'hard')
+      ) {
+        sfx.play('tick');
+      }
     }
     if (game.best !== savedBest) {
       savedBest = game.best;
       saveBest(game.best);
     }
+    captureClearRings(rings, game);
+    advanceRings(rings, dt);
     const boardCtx = fitCanvas(board);
     const nextCtx = fitCanvas(next);
     const boardRect = board.getBoundingClientRect();
     const nextRect = next.getBoundingClientRect();
-    renderBoard(boardCtx, game, boardRect.width, boardRect.height, reducedMotion);
+    renderBoard(boardCtx, game, boardRect.width, boardRect.height, reducedMotion, rings);
     renderPreview(nextCtx, game, nextRect.width, nextRect.height);
     syncHud(hud, game, sfx.muted);
     requestAnimationFrame(frame);

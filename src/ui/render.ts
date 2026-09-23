@@ -3,7 +3,8 @@ import { COLS, VISIBLE_ROWS, VISIBLE_TOP, type Cell } from '../fluid/grid';
 import { ghostOf, minos, type Active, type Mino } from '../game/piece';
 import { SHAPES } from '../game/tetrominoes';
 import type { GameState, Slide } from '../game/engine';
-import { drawCluster, drawNeck, rgbFor, rgba, type Rgb } from './liquid';
+import { drawCluster, drawDroplet, drawNeck, mixWhite, rgbFor, rgba, type Rgb } from './liquid';
+import type { SplashRing } from './splash';
 
 type Point = { x: number; y: number };
 
@@ -77,6 +78,7 @@ export function renderBoard(
   width: number,
   height: number,
   reducedMotion: boolean,
+  rings: readonly SplashRing[],
 ): void {
   ctx.clearRect(0, 0, width, height);
   const cell = Math.min((width - 12) / COLS, (height - 12) / VISIBLE_ROWS);
@@ -186,15 +188,8 @@ export function renderBoard(
     drawActive(ctx, state.active, state.fallVisual, state.time, balance.viscosity, toPixel, cell, reducedMotion);
   }
 
-  for (const bit of state.bits) {
-    if (bit.y < VISIBLE_TOP - 1 || bit.y > VISIBLE_TOP + VISIBLE_ROWS + 1) continue;
-    const pixel = toPixel(bit.x, bit.y);
-    const fade = 1 - bit.age / bit.life;
-    ctx.beginPath();
-    ctx.arc(pixel.x, pixel.y, bit.radius * cell, 0, Math.PI * 2);
-    ctx.fillStyle = rgba(rgbFor(bit.color), Math.max(0, fade));
-    ctx.fill();
-  }
+  drawBits(ctx, state, toPixel, cell, reducedMotion);
+  drawSplashRings(ctx, rings, toPixel, cell, reducedMotion);
 
   ctx.font = `700 ${Math.max(14, cell * 0.46)}px "Avenir Next", "Segoe UI", sans-serif`;
   ctx.textAlign = 'center';
@@ -214,7 +209,13 @@ export function renderBoard(
   }
 
   if (state.clearPulse > 0) {
-    ctx.fillStyle = `rgba(255,255,255,${0.08 * state.clearPulse})`;
+    const row = state.pending?.rows[0];
+    const tint = row === undefined ? null : state.grid[row]?.[0];
+    if (tint && tint.color >= 0) {
+      ctx.fillStyle = rgba(rgbFor(tint.color), 0.14 * state.clearPulse);
+      ctx.fillRect(originX, originY, boardW, boardH);
+    }
+    ctx.fillStyle = `rgba(255,255,255,${0.16 * state.clearPulse})`;
     ctx.fillRect(originX, originY, boardW, boardH);
   }
 
@@ -234,6 +235,64 @@ export function renderBoard(
   ctx.strokeStyle = 'rgba(0, 229, 255, 0.38)';
   ctx.lineWidth = 2;
   ctx.stroke();
+  ctx.restore();
+}
+
+function drawBits(
+  ctx: CanvasRenderingContext2D,
+  state: GameState,
+  toPixel: (x: number, y: number) => Point,
+  cell: number,
+  reducedMotion: boolean,
+): void {
+  ctx.save();
+  ctx.lineCap = 'round';
+  for (const bit of state.bits) {
+    if (bit.y < VISIBLE_TOP - 1 || bit.y > VISIBLE_TOP + VISIBLE_ROWS + 1) continue;
+    const fade = Math.max(0, 1 - bit.age / bit.life);
+    const head = toPixel(bit.x, bit.y);
+    const color = rgbFor(bit.color);
+    if (!reducedMotion) {
+      const tail = toPixel(bit.x - bit.vx * 0.028, bit.y - bit.vy * 0.028);
+      ctx.beginPath();
+      ctx.moveTo(tail.x, tail.y);
+      ctx.lineTo(head.x, head.y);
+      ctx.strokeStyle = rgba(mixWhite(color, 0.45), fade * 0.55);
+      ctx.lineWidth = Math.max(1, bit.radius * cell);
+      ctx.stroke();
+    }
+    drawDroplet(ctx, head.x, head.y, Math.max(1.6, bit.radius * cell * 1.45), color, fade);
+  }
+  ctx.restore();
+}
+
+function drawSplashRings(
+  ctx: CanvasRenderingContext2D,
+  rings: readonly SplashRing[],
+  toPixel: (x: number, y: number) => Point,
+  cell: number,
+  reducedMotion: boolean,
+): void {
+  ctx.save();
+  for (const ring of rings) {
+    const t = Math.max(0, Math.min(1, ring.age / ring.life));
+    const fade = 1 - t;
+    const travel = reducedMotion ? 0.2 : 1;
+    const pixel = toPixel(ring.x, ring.y);
+    const rx = cell * (0.45 + t * 5.4 * travel);
+    const ry = cell * (0.16 + t * 0.95 * travel);
+    const color = mixWhite(rgbFor(ring.color), 0.4);
+    ctx.beginPath();
+    ctx.ellipse(pixel.x, pixel.y, rx, ry, 0, 0, Math.PI * 2);
+    ctx.strokeStyle = rgba(color, 0.12 + fade * 0.72);
+    ctx.lineWidth = Math.max(1.5, cell * 0.07 * fade);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(pixel.x, pixel.y, rx * 0.68, ry * 0.68, 0, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(255, 255, 255, ${fade * 0.55})`;
+    ctx.lineWidth = Math.max(1, cell * 0.035);
+    ctx.stroke();
+  }
   ctx.restore();
 }
 

@@ -21,7 +21,7 @@ npm run build   # typecheck + production bundle
 npm run preview # serve the production build
 ```
 
-There is no backend. The best score is stored in `localStorage`.
+There is no backend. The best score, mute choice, and stage gates are stored in `localStorage`.
 
 ### Controls
 
@@ -36,7 +36,22 @@ There is no backend. The best score is stored in `localStorage`.
 | Mute | `M` | Sound button |
 | Restart | `R` | Restart |
 
-On a phone, the board also takes gestures: tap to rotate clockwise, swipe sideways to shift, short swipe down to nudge, long swipe down to hard-drop.
+On a phone, the board also takes gestures: tap to rotate clockwise, swipe sideways to shift, short swipe down to nudge, long swipe down to hard-drop. The on-screen buttons stay fixed to the bottom edge so they remain reachable.
+
+### Sound
+
+Mute with `M` or the **Sound** button. The choice is saved in this browser under the `localStorage` key `fluid-tetris-muted` (`1` muted, `0` on). Sounds are synthesized with the Web Audio API, so the game does not ship audio files:
+
+- a quiet tick while soft drop actually moves the piece
+- a short blip when same-color liquid merges
+- a splash when a row clears
+- a descending tone on game over
+
+### Stage gates
+
+The **Stage gates** panel edits how many cleared rows are required before stage 2 and stage 3. Those fields write `stages[1].afterLines` and `stages[2].afterLines`. Defaults are **4** and **8**. Set them to **6** and **14** to try a longer opening without editing code.
+
+Values are saved in the `localStorage` key `fluid-tetris-stage-gates` as `{ "stage2": 4, "stage3": 8 }`. They apply to the current run immediately (the active stage is recomputed from rows already cleared) and to later games. Stage 3 stays strictly above stage 2. **Reset 4 / 8** restores the defaults. Fall speed, viscosity, and the color pool still live only in `src/config.ts`.
 
 ### Rules
 
@@ -67,7 +82,7 @@ Edit `src/config.ts`. The four designer knobs are stage 1, and they stay in sync
 | `colorPoolSize` | How many entries from the front of `colors` can spawn |
 | `colors` | Palette. Shipped order is cyan, magenta, amber, lime, violet |
 
-`stages` is the level table the run actually reads. A stage turns on once cleared rows reach its `afterLines`.
+`stages` is the level table the run actually reads. A stage turns on once cleared rows reach its `afterLines`. The in-game Stage gates panel overrides stage 2 and stage 3 `afterLines` (defaults 4 and 8) and stores that override in `localStorage`. The table below is the shipped default.
 
 | Stage | afterLines | colorPoolSize | viscosity | fallSpeed | Colors |
 | --- | --- | --- | --- | --- | --- |
@@ -94,7 +109,7 @@ npm run build   # 타입 검사 + 프로덕션 빌드
 npm run preview # 빌드 결과 미리보기
 ```
 
-서버는 없습니다. 최고 점수는 브라우저 `localStorage`에 저장됩니다.
+서버는 없습니다. 최고 점수, 음소거, 스테이지 게이트는 브라우저 `localStorage`에 저장됩니다.
 
 ### 조작
 
@@ -109,7 +124,22 @@ npm run preview # 빌드 결과 미리보기
 | 음소거 | `M` | Sound |
 | 재시작 | `R` | Restart |
 
-휴대폰에서는 보드 제스처도 동작합니다. 탭하면 시계 방향 회전, 좌우 스와이프는 이동, 짧게 내리면 살짝 내리고, 길게 내리면 하드 드롭입니다.
+휴대폰에서는 보드 제스처도 동작합니다. 탭하면 시계 방향 회전, 좌우 스와이프는 이동, 짧게 내리면 살짝 내리고, 길게 내리면 하드 드롭입니다. 화면 아래 버튼은 아래에 고정되어 스크롤해도 누를 수 있습니다.
+
+### 소리
+
+`M` 또는 **Sound** 버튼으로 음소거합니다. 선택은 이 브라우저의 `localStorage` 키 `fluid-tetris-muted`에 저장됩니다 (`1` 음소거, `0` 켜짐). 소리는 Web Audio API로 합성하므로 오디오 파일을 넣지 않습니다.
+
+- 소프트 드롭으로 조각이 실제로 내려갈 때의 짧은 틱
+- 같은 색 액체가 합쳐질 때의 짧은 블립
+- 줄을 지울 때의 스플래시
+- 게임 오버 때의 하강음
+
+### 스테이지 게이트
+
+**Stage gates** 패널에서 스테이지 2와 스테이지 3으로 넘어가기 위해 지워야 하는 줄 수를 바꿉니다. 이 값은 `stages[1].afterLines`와 `stages[2].afterLines`입니다. 기본값은 **4**와 **8**입니다. 코드를 고치지 않고 초반을 길게 보려면 **6**과 **14**로 두면 됩니다.
+
+값은 `localStorage` 키 `fluid-tetris-stage-gates`에 `{ "stage2": 4, "stage3": 8 }` 형태로 저장됩니다. 현재 판에 바로 적용되고(이미 지운 줄 수로 현재 스테이지를 다시 계산), 이후 게임에도 유지됩니다. 스테이지 3 게이트는 항상 스테이지 2보다 큽니다. **Reset 4 / 8** 은 기본값으로 되돌립니다. 낙하 속도, 점도, 색 풀은 계속 `src/config.ts`에만 있습니다.
 
 ### 규칙
 
@@ -140,7 +170,7 @@ npm run preview # 빌드 결과 미리보기
 | `colorPoolSize` | `colors` 앞에서부터 몇 색을 소환에 쓸지 |
 | `colors` | 팔레트. 기본 순서는 시안, 마젠타, 앰버, 라임, 바이올렛 |
 
-실제로 판이 읽는 난이도는 `stages` 배열입니다. 지운 줄 수가 그 스테이지의 `afterLines` 에 닿으면 바뀝니다.
+실제로 판이 읽는 난이도는 `stages` 배열입니다. 지운 줄 수가 그 스테이지의 `afterLines` 에 닿으면 바뀝니다. 게임 안의 Stage gates 패널이 스테이지 2와 3의 `afterLines`를 덮어쓰며(기본 4와 8), 그 값은 `localStorage`에 저장됩니다. 아래 표는 출고 기본값입니다.
 
 | 스테이지 | afterLines | colorPoolSize | viscosity | fallSpeed | 색 |
 | --- | --- | --- | --- | --- | --- |
