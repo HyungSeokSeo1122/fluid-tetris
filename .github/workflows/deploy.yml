@@ -1,0 +1,108 @@
+name: Deploy site
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-site-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site-dist
+          path: dist
+          if-no-files-found: error
+          retention-days: 1
+
+  synth:
+    runs-on: ubuntu-latest
+    env:
+      CDK_DEFAULT_ACCOUNT: "000000000000"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+
+      - name: Check the CloudFormation template
+        working-directory: infra
+        run: |
+          npm ci
+          npm run check
+
+  deploy:
+    needs: [build, synth]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      AWS_BUCKET_NAME: ${{ vars.AWS_BUCKET_NAME }}
+      AWS_DISTRIBUTION_ID: ${{ vars.AWS_DISTRIBUTION_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - name: Require GitHub variables
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in AWS_DEPLOY_ROLE_ARN AWS_BUCKET_NAME AWS_DISTRIBUTION_ID AWS_REGION; do
+            if [ -z "${!name}" ]; then
+              echo "Missing GitHub variable: ${name}"
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            echo "Copy these from the CDK outputs. See DEPLOY.md. Do not store long-lived AWS keys."
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: site-dist
+          path: dist
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: fluid-tetris-deploy
+
+      - name: Publish dist to S3
+        run: |
+          set -euo pipefail
+          aws s3 sync dist "s3://${AWS_BUCKET_NAME}" \
+            --delete \
+            --cache-control "public,max-age=31536000,immutable"
+          aws s3 cp dist/index.html "s3://${AWS_BUCKET_NAME}/index.html" \
+            --cache-control "no-cache, no-store, must-revalidate" \
+            --content-type "text/html; charset=utf-8"
+
+      - name: Invalidate CloudFront
+        run: |
+          set -euo pipefail
+          aws cloudfront create-invalidation \
+            --distribution-id "${AWS_DISTRIBUTION_ID}" \
+            --paths "/index.html" "/"

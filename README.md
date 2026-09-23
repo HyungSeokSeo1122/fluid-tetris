@@ -23,6 +23,8 @@ npm run preview # serve the production build
 
 There is no backend. The best score, mute choice, and stage gates are stored in `localStorage`.
 
+Static hosting on private S3 + CloudFront is documented in [DEPLOY.md](DEPLOY.md).
+
 ### Controls
 
 | Action | Desktop | Touch |
@@ -113,6 +115,8 @@ npm run preview # 빌드 결과 미리보기
 ```
 
 서버는 없습니다. 최고 점수, 음소거, 스테이지 게이트는 브라우저 `localStorage`에 저장됩니다.
+
+비공개 S3 + CloudFront 배포는 [DEPLOY.md](DEPLOY.md)에 있습니다.
 
 ### 조작
 

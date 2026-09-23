@@ -1,0 +1,21 @@
+{
+  "name": "fluid-tetris-infra",
+  "private": true,
+  "version": "1.0.0",
+  "description": "CDK app for the Fluid Tetris static site (private S3 + CloudFront).",
+  "scripts": {
+    "synth": "cdk synth --quiet",
+    "check": "tsc --noEmit && cdk synth --quiet && node scripts/check-template.mjs",
+    "diff": "cdk diff",
+    "deploy": "cdk deploy",
+    "destroy": "cdk destroy"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "aws-cdk": "^2.178.2",
+    "aws-cdk-lib": "^2.178.2",
+    "constructs": "^10.4.2",
+    "tsx": "^4.19.3",
+    "typescript": "^5.6.3"
+  }
+}
