@@ -247,7 +247,7 @@ kbd {
     grid-template-columns: 1fr 1fr;
   }
   .help { display: none; }
-  .settings, .stack { grid-column: 1 / -1; }
+  .flow, .settings, .stack { grid-column: 1 / -1; }
   .touch-bar {
     display: grid;
     position: fixed;
