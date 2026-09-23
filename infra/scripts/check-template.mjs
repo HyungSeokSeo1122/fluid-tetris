@@ -15,15 +15,32 @@ assert(typeof expectedRepo === 'string' && !expectedRepo.includes('*'), 'cdk.jso
 assert(expectedRegion === 'ap-northeast-2', 'cdk.json region default must stay ap-northeast-2');
 
 const manifest = JSON.parse(readFileSync(join(outDir, 'manifest.json'), 'utf8'));
-const templateNames = Object.values(manifest.artifacts)
-  .filter((artifact) => artifact.type === 'aws:cloudformation:stack')
-  .map((artifact) => artifact.properties.templateFile);
+const stackArtifacts = Object.values(manifest.artifacts).filter((artifact) => artifact.type === 'aws:cloudformation:stack');
+const regionByTemplate = new Map(
+  stackArtifacts.map((artifact) => [artifact.properties.templateFile, artifact.environment.split('/').at(-1)]),
+);
+const templateNames = stackArtifacts.map((artifact) => artifact.properties.templateFile);
 const templates = templateNames.map((name) => {
   const text = readFileSync(join(outDir, name), 'utf8');
   return { name, text, template: JSON.parse(text) };
 });
 
-assert(templates.length === 3, `expected 3 templates (oidc, staging, prod), found ${templates.length}`);
+const expectedStacks = [
+  ['FluidTetrisOidc.template.json', 'ap-northeast-2'],
+  ['FluidTetrisStagingAuth.template.json', 'ap-northeast-2'],
+  ['FluidTetrisStagingEdge.template.json', 'us-east-1'],
+  ['FluidTetrisStaging.template.json', 'ap-northeast-2'],
+  ['FluidTetrisProdAuth.template.json', 'ap-northeast-2'],
+  ['FluidTetrisProdEdge.template.json', 'us-east-1'],
+  ['FluidTetrisProd.template.json', 'ap-northeast-2'],
+];
+assert(
+  templateNames.length === expectedStacks.length &&
+    expectedStacks.every(([name, region]) => templateNames.includes(name) && regionByTemplate.get(name) === region),
+  `expected OIDC, two auth pools, two us-east-1 edge functions, and two sites. Found ${templateNames
+    .map((name) => `${name}@${regionByTemplate.get(name)}`)
+    .join(', ')}`,
+);
 
 for (const entry of templates) {
   assert(!entry.text.includes('AKIA'), `${entry.name} contains an AWS access key id`);
@@ -60,6 +77,11 @@ for (const entry of siteTemplates) {
 assert(seenRoles.has('fluid-tetris-github-deploy-staging'), 'missing staging deploy role');
 assert(seenRoles.has('fluid-tetris-github-deploy-prod'), 'missing prod deploy role');
 
+assertAuth(templates.find((entry) => entry.name === 'FluidTetrisStagingAuth.template.json'), 'staging', 'ft-stg-');
+assertAuth(templates.find((entry) => entry.name === 'FluidTetrisProdAuth.template.json'), 'prod', 'ft-prd-');
+assertEdge(templates.find((entry) => entry.name === 'FluidTetrisStagingEdge.template.json'));
+assertEdge(templates.find((entry) => entry.name === 'FluidTetrisProdEdge.template.json'));
+
 console.log(`Templates ok: ${templateNames.join(', ')}`);
 
 function assertSite(entry, repo, region) {
@@ -83,8 +105,8 @@ function assertSite(entry, repo, region) {
   for (const { resource } of roles) {
     const roleText = JSON.stringify(resource);
     const isGithub = roleText.includes('token.actions.githubusercontent.com');
-    const isBucketCleanup = roleText.includes('S3AutoDeleteObjects');
-    assert(isGithub || isBucketCleanup, `${name}: unexpected IAM role`);
+    const trustsOnlyLambda = roleText.includes('lambda.amazonaws.com') && !roleText.includes('edgelambda.amazonaws.com');
+    assert(isGithub || trustsOnlyLambda, `${name}: unexpected IAM role`);
   }
 
   const bucket = buckets[0].resource;
@@ -119,6 +141,8 @@ function assertSite(entry, repo, region) {
   const assetBehavior = (config?.CacheBehaviors ?? []).find((behavior) => behavior.PathPattern === '/assets/*');
   assert(assetBehavior, `${name}: missing /assets/* cache behavior`);
   assert(assetBehavior.CachePolicyId === CACHING_OPTIMIZED, `${name}: hashed assets should use CachingOptimized`);
+  assertViewerAuth(config?.DefaultCacheBehavior, `${name} default`);
+  assertViewerAuth(assetBehavior, `${name} /assets/*`);
 
   const errors = new Map((config?.CustomErrorResponses ?? []).map((error) => [error.ErrorCode, error]));
   for (const status of [403, 404]) {
@@ -133,6 +157,22 @@ function assertSite(entry, repo, region) {
   const assumeText = JSON.stringify(githubRoles[0].resource.Properties?.AssumeRolePolicyDocument ?? {});
   assert(assumeText.includes('sts.amazonaws.com'), `${name}: role audience is not sts.amazonaws.com`);
 
+  assert(text.includes('/_auth/callback'), `${name}: callback URL is not registered on the CloudFront domain`);
+  assert(text.includes('cognito-idp:UpdateUserPoolClient'), `${name}: missing permission to set callback URLs`);
+  assert(!text.includes('cognito-idp:*'), `${name}: Cognito permission must be the one client update`);
+  assert(!text.includes('USER_PASSWORD'), `${name}: site must not enable password auth flows`);
+  assert(!text.includes('"implicit"'), `${name}: OAuth implicit flow must stay off`);
+  const cognitoPolicies = resourcesOfType(template, 'AWS::IAM::Policy').filter(({ resource }) =>
+    JSON.stringify(resource).includes('cognito-idp:UpdateUserPoolClient'),
+  );
+  assert(cognitoPolicies.length === 1, `${name}: expected one callback-update policy`);
+  const cognitoStatement = cognitoPolicies[0].resource.Properties?.PolicyDocument?.Statement?.[0];
+  assert(cognitoStatement?.Resource !== '*', `${name}: callback update must be limited to the user pool`);
+  assert(
+    JSON.stringify(githubRoles[0].resource).includes('cognito') === false,
+    `${name}: deploy role must not administer Cognito`,
+  );
+
   if (roleName === 'fluid-tetris-github-deploy-staging') {
     assert(bucket.DeletionPolicy === 'Delete', `${name}: staging bucket should be deleted with the stack`);
     assert(assumeText.includes(`repo:${repo}:ref:refs/heads/main`), `${name}: staging trust is not limited to main`);
@@ -141,6 +181,7 @@ function assertSite(entry, repo, region) {
     assertOutputs(template, 'STAGING', 'Staging', region);
   } else if (roleName === 'fluid-tetris-github-deploy-prod') {
     assert(bucket.DeletionPolicy === 'Retain', `${name}: prod bucket should be retained`);
+    assert(!text.includes('S3AutoDeleteObjects'), `${name}: prod must not auto-delete the bucket`);
     assert(assumeText.includes('StringLike'), `${name}: prod trust should use StringLike for tag names`);
     assert(assumeText.includes(`repo:${repo}:ref:refs/tags/v*`), `${name}: prod trust is not limited to v* tags`);
     assert(!assumeText.includes('refs/heads'), `${name}: prod trust must not allow a branch`);
@@ -167,6 +208,78 @@ function assertOutputs(template, prefix, label, region) {
     (output) => output.Description === `GitHub variable AWS_${prefix}_REGION`,
   );
   assert(regionOutput?.Value === region, `stack region is ${regionOutput?.Value}, expected ${region}`);
+}
+
+function assertAuth(entry, siteEnvironment, domainPrefix) {
+  const { name, template } = entry;
+  const pools = resourcesOfType(template, 'AWS::Cognito::UserPool');
+  const clients = resourcesOfType(template, 'AWS::Cognito::UserPoolClient');
+  const domains = resourcesOfType(template, 'AWS::Cognito::UserPoolDomain');
+  assert(pools.length === 1, `${name}: expected 1 user pool`);
+  assert(clients.length === 1, `${name}: expected 1 app client`);
+  assert(domains.length === 1, `${name}: expected 1 hosted UI domain`);
+
+  const pool = pools[0].resource;
+  const client = clients[0].resource.Properties;
+  assert(pool.Properties?.UserPoolName === `fluid-tetris-${siteEnvironment}`, `${name}: unexpected pool name`);
+  assert(pool.Properties?.AdminCreateUserConfig?.AllowAdminCreateUserOnly === true, `${name}: self sign-up must be off`);
+  assert(
+    pool.Properties?.AccountRecoverySetting?.RecoveryMechanisms?.[0]?.Name === 'admin_only',
+    `${name}: password recovery must be admin-only`,
+  );
+  assert(pool.Properties?.Policies?.PasswordPolicy?.MinimumLength === 12, `${name}: password minimum should be 12`);
+  assert(client?.GenerateSecret === false, `${name}: the web client must stay public`);
+  assert(JSON.stringify(client?.AllowedOAuthFlows) === JSON.stringify(['code']), `${name}: OAuth must be authorization code only`);
+  assert(
+    JSON.stringify(client?.ExplicitAuthFlows) === JSON.stringify(['ALLOW_REFRESH_TOKEN_AUTH']),
+    `${name}: the client must not allow direct password sign-in`,
+  );
+  assert(client?.PreventUserExistenceErrors === 'ENABLED', `${name}: user-existence errors must be hidden`);
+  assert(!JSON.stringify(client).includes('client_secret'), `${name}: client secret must not be in the template`);
+  assert(String(domains[0].resource.Properties?.Domain).startsWith(domainPrefix), `${name}: unexpected Cognito domain prefix`);
+
+  if (siteEnvironment === 'staging') {
+    assert(pool.DeletionPolicy === 'Delete', `${name}: staging pool should be deleted with the stack`);
+    assert(pool.Properties?.DeletionProtection === 'INACTIVE', `${name}: staging pool should not be deletion-protected`);
+  } else {
+    assert(pool.DeletionPolicy === 'Retain', `${name}: prod pool should be retained`);
+    assert(pool.Properties?.DeletionProtection === 'ACTIVE', `${name}: prod pool should be deletion-protected`);
+  }
+}
+
+function assertEdge(entry) {
+  const { name, text, template } = entry;
+  const functions = resourcesOfType(template, 'AWS::Lambda::Function').filter((item) =>
+    JSON.stringify(item.resource.Properties?.Code ?? {}).includes('token_use'),
+  );
+  assert(functions.length === 1, `${name}: expected the sign-in function`);
+  const fn = functions[0].resource.Properties;
+  assert(fn.Runtime === 'nodejs24.x', `${name}: sign-in function runtime is ${fn.Runtime}`);
+  assert(fn.Timeout === 5, `${name}: viewer-request timeout must be 5 seconds`);
+  assert(fn.MemorySize === 128, `${name}: viewer-request memory must be 128 MB`);
+  for (const required of ['HttpOnly', 'Secure', 'SameSite=Lax', 'code_challenge_method', 'S256']) {
+    assert(text.includes(required), `${name}: sign-in function is missing ${required}`);
+  }
+  assert(!/client_secret|SignUp|USER_PASSWORD/i.test(text), `${name}: sign-in function must not offer sign-up or a client secret`);
+  const trust = JSON.stringify(
+    resourcesOfType(template, 'AWS::IAM::Role').find((item) =>
+      JSON.stringify(item.resource).includes('edgelambda.amazonaws.com'),
+    )?.resource ?? {},
+  );
+  assert(trust.includes('edgelambda.amazonaws.com'), `${name}: function role must trust edgelambda`);
+  const permission = resourcesOfType(template, 'AWS::Lambda::Permission').find((item) =>
+    item.resource.Properties?.Principal === 'edgelambda.amazonaws.com',
+  );
+  assert(permission, `${name}: missing edgelambda invoke permission`);
+  const version = resourcesOfType(template, 'AWS::Lambda::Version').find((item) => item.resource.DeletionPolicy === 'Retain');
+  assert(version, `${name}: published sign-in version should be retained`);
+}
+
+function assertViewerAuth(behavior, label) {
+  const associations = behavior?.LambdaFunctionAssociations ?? [];
+  assert(associations.length === 1, `${label}: expected one Lambda@Edge association`);
+  assert(associations[0].EventType === 'viewer-request', `${label}: auth must run on viewer-request`);
+  assert(associations[0].IncludeBody === false, `${label}: viewer-request must not read the body`);
 }
 
 function resourcesOfType(doc, type) {

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib';
+import { CognitoAuthStack } from '../lib/cognito-auth-stack';
+import { EdgeAuthStack } from '../lib/edge-auth-stack';
 import { GitHubOidcStack } from '../lib/github-oidc-stack';
 import { SiteEnvironment, SiteStack } from '../lib/site-stack';
 
@@ -36,15 +38,39 @@ const providerArn = githubOidcProviderArn
     }).providerArn;
 
 for (const siteEnvironment of environments) {
+  const auth = new CognitoAuthStack(app, authStackId(siteEnvironment), {
+    env: awsEnv,
+    crossRegionReferences: true,
+    description: `Admin-only Cognito user pool for Fluid Tetris ${siteEnvironment}.`,
+    siteEnvironment,
+    domainPrefix: cognitoDomainPrefix(app, siteEnvironment, account),
+  });
+  const edge = new EdgeAuthStack(app, edgeStackId(siteEnvironment), {
+    env: { account, region: 'us-east-1' },
+    crossRegionReferences: true,
+    description: `Lambda@Edge sign-in check for Fluid Tetris ${siteEnvironment}.`,
+    siteEnvironment,
+    poolRegion: region,
+    userPoolId: auth.userPoolId,
+    userPoolClientId: auth.userPoolClientId,
+    authBaseUrl: auth.authBaseUrl,
+  });
   const stack = new SiteStack(app, stackId(siteEnvironment), {
     env: awsEnv,
+    crossRegionReferences: true,
     description: `Fluid Tetris ${siteEnvironment} static site (private S3 + CloudFront OAC).`,
     siteEnvironment,
     githubRepo,
     githubOidcProviderArn: providerArn,
+    authVersion: edge.version,
+    userPoolId: auth.userPoolId,
+    userPoolArn: auth.userPoolArn,
+    userPoolClientId: auth.userPoolClientId,
   });
-  cdk.Tags.of(stack).add('Project', 'fluid-tetris');
-  cdk.Tags.of(stack).add('Environment', siteEnvironment);
+  for (const resource of [auth, edge, stack]) {
+    cdk.Tags.of(resource).add('Project', 'fluid-tetris');
+    cdk.Tags.of(resource).add('Environment', siteEnvironment);
+  }
 }
 
 function selectedEnvironments(scope: cdk.App): SiteEnvironment[] {
@@ -67,6 +93,66 @@ function stackId(siteEnvironment: SiteEnvironment): string {
       return 'FluidTetrisStaging';
     case 'prod':
       return 'FluidTetrisProd';
+    default: {
+      const neverEnv: never = siteEnvironment;
+      throw new Error(`Unknown environment: ${neverEnv}`);
+    }
+  }
+}
+
+function authStackId(siteEnvironment: SiteEnvironment): string {
+  switch (siteEnvironment) {
+    case 'staging':
+      return 'FluidTetrisStagingAuth';
+    case 'prod':
+      return 'FluidTetrisProdAuth';
+    default: {
+      const neverEnv: never = siteEnvironment;
+      throw new Error(`Unknown environment: ${neverEnv}`);
+    }
+  }
+}
+
+function edgeStackId(siteEnvironment: SiteEnvironment): string {
+  switch (siteEnvironment) {
+    case 'staging':
+      return 'FluidTetrisStagingEdge';
+    case 'prod':
+      return 'FluidTetrisProdEdge';
+    default: {
+      const neverEnv: never = siteEnvironment;
+      throw new Error(`Unknown environment: ${neverEnv}`);
+    }
+  }
+}
+
+function cognitoDomainPrefix(scope: cdk.App, siteEnvironment: SiteEnvironment, accountId: string): string {
+  const prefix = readContext(scope, cognitoPrefixContextKey(siteEnvironment)) ?? defaultCognitoPrefix(siteEnvironment, accountId);
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(prefix)) {
+    throw new Error(`Cognito domain prefix must be lowercase letters, numbers, and hyphens. Received: ${prefix}`);
+  }
+  return prefix;
+}
+
+function cognitoPrefixContextKey(siteEnvironment: SiteEnvironment): string {
+  switch (siteEnvironment) {
+    case 'staging':
+      return 'stagingCognitoDomainPrefix';
+    case 'prod':
+      return 'prodCognitoDomainPrefix';
+    default: {
+      const neverEnv: never = siteEnvironment;
+      throw new Error(`Unknown environment: ${neverEnv}`);
+    }
+  }
+}
+
+function defaultCognitoPrefix(siteEnvironment: SiteEnvironment, accountId: string): string {
+  switch (siteEnvironment) {
+    case 'staging':
+      return `ft-stg-${accountId}`;
+    case 'prod':
+      return `ft-prd-${accountId}`;
     default: {
       const neverEnv: never = siteEnvironment;
       throw new Error(`Unknown environment: ${neverEnv}`);

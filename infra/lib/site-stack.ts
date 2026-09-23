@@ -1,7 +1,9 @@
 import * as cdk from 'aws-cdk-lib';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import * as cr from 'aws-cdk-lib/custom-resources';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
 import { GITHUB_OIDC_HOST } from './github-oidc-stack';
@@ -14,6 +16,11 @@ export interface SiteStackProps extends cdk.StackProps {
   readonly githubRepo: string;
   /** ARN of the account-wide GitHub OIDC provider. Shared by both environments. */
   readonly githubOidcProviderArn: string;
+  /** Published Lambda@Edge version that gates every viewer request. */
+  readonly authVersion: lambda.IVersion;
+  readonly userPoolId: string;
+  readonly userPoolArn: string;
+  readonly userPoolClientId: string;
 }
 
 /**
@@ -60,13 +67,14 @@ export class SiteStack extends cdk.Stack {
       defaultRootObject: 'index.html',
       priceClass: cloudfront.PriceClass.PRICE_CLASS_200,
       httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
-      defaultBehavior: viewerBehavior(origin, cloudfront.CachePolicy.CACHING_DISABLED),
+      defaultBehavior: viewerBehavior(origin, cloudfront.CachePolicy.CACHING_DISABLED, props.authVersion),
       additionalBehaviors: {
         // Vite fingerprints files under dist/assets. Cache those at the edge.
-        '/assets/*': viewerBehavior(origin, cloudfront.CachePolicy.CACHING_OPTIMIZED),
+        '/assets/*': viewerBehavior(origin, cloudfront.CachePolicy.CACHING_OPTIMIZED, props.authVersion),
       },
       errorResponses: [spaError(403), spaError(404)],
     });
+    bindAuthCallbacks(this, distribution, props.userPoolId, props.userPoolArn, props.userPoolClientId);
 
     const deployRole = new iam.Role(this, 'GitHubActionsRole', {
       roleName: `fluid-tetris-github-deploy-${siteEnvironment}`,
@@ -210,6 +218,7 @@ function trustConditions(siteEnvironment: SiteEnvironment, githubRepo: string): 
 function viewerBehavior(
   origin: cloudfront.IOrigin,
   cachePolicy: cloudfront.ICachePolicy,
+  authVersion: lambda.IVersion,
 ): cloudfront.BehaviorOptions {
   return {
     origin,
@@ -218,7 +227,63 @@ function viewerBehavior(
     responseHeadersPolicy: cloudfront.ResponseHeadersPolicy.SECURITY_HEADERS,
     compress: true,
     allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
+    edgeLambdas: [
+      {
+        functionVersion: authVersion,
+        eventType: cloudfront.LambdaEdgeEventType.VIEWER_REQUEST,
+        includeBody: false,
+      },
+    ],
   };
+}
+
+function bindAuthCallbacks(
+  stack: cdk.Stack,
+  distribution: cloudfront.Distribution,
+  userPoolId: string,
+  userPoolArn: string,
+  userPoolClientId: string,
+): void {
+  const callbackUrl = `https://${distribution.distributionDomainName}/_auth/callback`;
+  const logoutUrl = `https://${distribution.distributionDomainName}/`;
+  const parameters = {
+    UserPoolId: userPoolId,
+    ClientId: userPoolClientId,
+    CallbackURLs: [callbackUrl],
+    LogoutURLs: [logoutUrl],
+    AllowedOAuthFlows: ['code'],
+    AllowedOAuthScopes: ['openid', 'email'],
+    AllowedOAuthFlowsUserPoolClient: true,
+    SupportedIdentityProviders: ['COGNITO'],
+    ExplicitAuthFlows: ['ALLOW_REFRESH_TOKEN_AUTH'],
+    PreventUserExistenceErrors: 'ENABLED',
+    EnableTokenRevocation: true,
+    RefreshTokenValidity: 1,
+    AccessTokenValidity: 60,
+    IdTokenValidity: 60,
+    TokenValidityUnits: {
+      RefreshToken: 'days',
+      AccessToken: 'minutes',
+      IdToken: 'minutes',
+    },
+  };
+  const call: cr.AwsSdkCall = {
+    service: 'CognitoIdentityServiceProvider',
+    action: 'updateUserPoolClient',
+    parameters,
+    physicalResourceId: cr.PhysicalResourceId.of(cdk.Fn.join(':', [userPoolClientId, distribution.distributionDomainName])),
+  };
+  new cr.AwsCustomResource(stack, 'AuthCallbackUrls', {
+    onCreate: call,
+    onUpdate: call,
+    policy: cr.AwsCustomResourcePolicy.fromStatements([
+      new iam.PolicyStatement({
+        actions: ['cognito-idp:UpdateUserPoolClient'],
+        resources: [userPoolArn],
+      }),
+    ]),
+    installLatestAwsSdk: false,
+  });
 }
 
 function spaError(httpStatus: 403 | 404): cloudfront.ErrorResponse {
